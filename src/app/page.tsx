@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { Provider, Session, SupabaseClient } from "@supabase/supabase-js";
+import { getSupabaseClient } from "@/lib/supabaseClient";
 
 type TabKey = "home" | "fridge" | "recommend" | "shopping" | "settings";
 type MeasureMode = "simple" | "precise";
@@ -44,12 +46,66 @@ type QuickItem = {
   defaultExpiryDays: number;
 };
 
-const STORAGE_KEYS = {
+const LEGACY_STORAGE_KEYS = {
   fridgeItems: "our-fridge:v1:fridge-items",
   shoppingList: "our-fridge:v1:shopping-list",
   essentialItems: "our-fridge:v1:essential-items",
   measureMode: "our-fridge:v1:measure-mode",
 } as const;
+
+const OAUTH_PROVIDERS = [
+  { key: "google", label: "Google로 로그인", icon: "🟢" },
+  { key: "kakao", label: "카카오로 로그인", icon: "💬" },
+  { key: "naver", label: "네이버로 로그인", icon: "🟩" },
+] as const;
+
+type OAuthProviderKey = (typeof OAUTH_PROVIDERS)[number]["key"];
+
+type StorageKeys = {
+  fridgeItems: string;
+  shoppingList: string;
+  essentialItems: string;
+  measureMode: string;
+};
+
+function getStorageKeys(userId: string): StorageKeys {
+  return {
+    fridgeItems: `our-fridge:v2:${userId}:fridge-items`,
+    shoppingList: `our-fridge:v2:${userId}:shopping-list`,
+    essentialItems: `our-fridge:v2:${userId}:essential-items`,
+    measureMode: `our-fridge:v2:${userId}:measure-mode`,
+  };
+}
+
+function migrateLegacyStorage(userId: string): StorageKeys {
+  const nextKeys = getStorageKeys(userId);
+
+  if (typeof window === "undefined") {
+    return nextKeys;
+  }
+
+  const hasScopedData = Object.values(nextKeys).some((key) => window.localStorage.getItem(key) !== null);
+
+  if (hasScopedData) {
+    return nextKeys;
+  }
+
+  const legacyEntries: Array<[keyof typeof LEGACY_STORAGE_KEYS, string]> = [
+    ["fridgeItems", LEGACY_STORAGE_KEYS.fridgeItems],
+    ["shoppingList", LEGACY_STORAGE_KEYS.shoppingList],
+    ["essentialItems", LEGACY_STORAGE_KEYS.essentialItems],
+    ["measureMode", LEGACY_STORAGE_KEYS.measureMode],
+  ];
+
+  for (const [field, legacyKey] of legacyEntries) {
+    const legacyValue = window.localStorage.getItem(legacyKey);
+    if (legacyValue) {
+      window.localStorage.setItem(nextKeys[field], legacyValue);
+    }
+  }
+
+  return nextKeys;
+}
 
 const QUICK_ITEMS: Array<{ title: string; items: QuickItem[] }> = [
   {
@@ -184,16 +240,22 @@ function toneClass(tone: NoticeTone): string {
 }
 
 export default function HomePage() {
-  const [tab, setTab] = useState<TabKey>("home");
-  const [fridgeItems, setFridgeItems] = useState<FridgeItem[]>(() => readJson(STORAGE_KEYS.fridgeItems, []));
-  const [shoppingList, setShoppingList] = useState<ShoppingItem[]>(() => readJson(STORAGE_KEYS.shoppingList, []));
-  const [essentialItems, setEssentialItems] = useState<string[]>(() =>
-    readJson(STORAGE_KEYS.essentialItems, ["계란", "우유", "대파"]),
+  const supabase = useMemo<SupabaseClient | null>(() => getSupabaseClient(), []);
+  const [session, setSession] = useState<Session | null>(null);
+  const [authLoading, setAuthLoading] = useState(Boolean(supabase));
+  const [authError, setAuthError] = useState<string | null>(
+    supabase
+      ? null
+      : "Supabase 설정이 없어 로그인 기능을 사용할 수 없습니다. NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY를 설정해 주세요.",
   );
-  const [measureMode, setMeasureMode] = useState<MeasureMode>(() => {
-    const value = readJson<string>(STORAGE_KEYS.measureMode, "simple");
-    return value === "precise" ? "precise" : "simple";
-  });
+  const [authPendingProvider, setAuthPendingProvider] = useState<OAuthProviderKey | null>(null);
+
+  const [tab, setTab] = useState<TabKey>("home");
+  const [fridgeItems, setFridgeItems] = useState<FridgeItem[]>([]);
+  const [shoppingList, setShoppingList] = useState<ShoppingItem[]>([]);
+  const [essentialItems, setEssentialItems] = useState<string[]>(["계란", "우유", "대파"]);
+  const [measureMode, setMeasureMode] = useState<MeasureMode>("simple");
+  const [storageReady, setStorageReady] = useState(false);
   const [notifEnabled, setNotifEnabled] = useState<boolean>(() => {
     if (typeof window === "undefined" || !("Notification" in window)) {
       return false;
@@ -211,24 +273,103 @@ export default function HomePage() {
   const [showGuide, setShowGuide] = useState(false);
   const [dismissedNoticeIds, setDismissedNoticeIds] = useState<string[]>([]);
 
-  const fridgeSeq = useRef(fridgeItems.length + 1);
-  const shoppingSeq = useRef(shoppingList.length + 1);
+  const userStorageKeys = session?.user?.id ? getStorageKeys(session.user.id) : null;
+
+  const fridgeSeq = useRef(1);
+  const shoppingSeq = useRef(1);
 
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEYS.fridgeItems, JSON.stringify(fridgeItems));
-  }, [fridgeItems]);
+    if (!supabase) {
+      return;
+    }
+
+    let mounted = true;
+
+    const bootstrapSession = async () => {
+      const { data, error } = await supabase.auth.getSession();
+
+      if (!mounted) {
+        return;
+      }
+
+      if (error) {
+        setAuthError(error.message);
+      }
+
+      setSession(data.session);
+      setAuthLoading(false);
+    };
+
+    bootstrapSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setAuthLoading(false);
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [supabase]);
 
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEYS.shoppingList, JSON.stringify(shoppingList));
-  }, [shoppingList]);
+    if (!session?.user?.id || !userStorageKeys) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setStorageReady(false);
+      setFridgeItems([]);
+      setShoppingList([]);
+      setEssentialItems(["계란", "우유", "대파"]);
+      setMeasureMode("simple");
+      setDismissedNoticeIds([]);
+      return;
+    }
+
+    const keys = migrateLegacyStorage(session.user.id);
+
+    setFridgeItems(readJson<FridgeItem[]>(keys.fridgeItems, []));
+    setShoppingList(readJson<ShoppingItem[]>(keys.shoppingList, []));
+    setEssentialItems(readJson<string[]>(keys.essentialItems, ["계란", "우유", "대파"]));
+
+    const storedMode = readJson<string>(keys.measureMode, "simple");
+    setMeasureMode(storedMode === "precise" ? "precise" : "simple");
+    setDismissedNoticeIds([]);
+    setStorageReady(true);
+  }, [session?.user?.id, userStorageKeys]);
 
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEYS.essentialItems, JSON.stringify(essentialItems));
-  }, [essentialItems]);
+    if (!storageReady || !userStorageKeys) {
+      return;
+    }
+
+    window.localStorage.setItem(userStorageKeys.fridgeItems, JSON.stringify(fridgeItems));
+  }, [fridgeItems, storageReady, userStorageKeys]);
 
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEYS.measureMode, JSON.stringify(measureMode));
-  }, [measureMode]);
+    if (!storageReady || !userStorageKeys) {
+      return;
+    }
+
+    window.localStorage.setItem(userStorageKeys.shoppingList, JSON.stringify(shoppingList));
+  }, [shoppingList, storageReady, userStorageKeys]);
+
+  useEffect(() => {
+    if (!storageReady || !userStorageKeys) {
+      return;
+    }
+
+    window.localStorage.setItem(userStorageKeys.essentialItems, JSON.stringify(essentialItems));
+  }, [essentialItems, storageReady, userStorageKeys]);
+
+  useEffect(() => {
+    if (!storageReady || !userStorageKeys) {
+      return;
+    }
+
+    window.localStorage.setItem(userStorageKeys.measureMode, JSON.stringify(measureMode));
+  }, [measureMode, storageReady, userStorageKeys]);
 
   useEffect(() => {
     fridgeSeq.current = Math.max(fridgeSeq.current, fridgeItems.length + 1);
@@ -425,6 +566,75 @@ export default function HomePage() {
       });
     }
   };
+
+  const startOAuthLogin = async (providerKey: OAuthProviderKey) => {
+    if (!supabase) {
+      setAuthError("Supabase 설정이 없어 OAuth 로그인을 시작할 수 없습니다.");
+      return;
+    }
+
+    setAuthError(null);
+    setAuthPendingProvider(providerKey);
+
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: providerKey as Provider,
+      options: {
+        redirectTo: typeof window === "undefined" ? undefined : window.location.origin,
+      },
+    });
+
+    if (error) {
+      setAuthError(error.message);
+      setAuthPendingProvider(null);
+    }
+  };
+
+  const signOut = async () => {
+    if (!supabase) {
+      setSession(null);
+      return;
+    }
+
+    await supabase.auth.signOut();
+    setTab("home");
+  };
+
+  const renderAuthView = () => (
+    <main className="min-h-screen bg-slate-100">
+      <div className="mx-auto flex min-h-screen w-full max-w-[430px] flex-col justify-center space-y-5 border-x border-slate-200 bg-slate-50 p-6 shadow-2xl">
+        <div className="space-y-2 text-center">
+          <p className="text-4xl">🧊</p>
+          <h1 className="text-3xl font-extrabold text-slate-900">우리집 냉장고 로그인</h1>
+          <p className="text-sm text-slate-500">Google · 카카오 · 네이버 OAuth 로그인으로 시작해 주세요.</p>
+        </div>
+
+        <div className="space-y-3">
+          {OAUTH_PROVIDERS.map((provider) => (
+            <button
+              key={provider.key}
+              type="button"
+              onClick={() => startOAuthLogin(provider.key)}
+              disabled={authPendingProvider !== null}
+              className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <span aria-hidden="true">{provider.icon}</span>
+              {authPendingProvider === provider.key ? "로그인 요청 중..." : provider.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 text-xs text-slate-500">
+          <p>환경변수: NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY</p>
+        </div>
+
+        {authError ? (
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            로그인 오류: {authError}
+          </div>
+        ) : null}
+      </div>
+    </main>
+  );
 
   const renderHome = () => {
     const urgentItems = fridgeItems.filter((item) => {
@@ -936,6 +1146,23 @@ export default function HomePage() {
     return renderHome();
   };
 
+  if (authLoading) {
+    return (
+      <main className="min-h-screen bg-slate-100">
+        <div className="mx-auto flex min-h-screen w-full max-w-[430px] items-center justify-center border-x border-slate-200 bg-slate-50 shadow-2xl">
+          <div className="text-center">
+            <p className="text-3xl">🔐</p>
+            <p className="mt-2 text-sm text-slate-500">로그인 상태를 확인하는 중입니다...</p>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (!session) {
+    return renderAuthView();
+  }
+
   const navItems: Array<{ key: TabKey; label: string; icon: string }> = [
     { key: "home", label: "홈", icon: "🏠" },
     { key: "fridge", label: "냉장고", icon: "🧊" },
@@ -947,6 +1174,19 @@ export default function HomePage() {
   return (
     <main className="min-h-screen bg-slate-100">
       <div className="mx-auto min-h-screen w-full max-w-[430px] border-x border-slate-200 bg-slate-50 shadow-2xl">
+        <header className="sticky top-0 z-30 flex items-center justify-between border-b border-slate-200 bg-white/95 px-4 py-2 backdrop-blur">
+          <p className="min-w-0 truncate text-xs font-medium text-slate-500">
+            {session.user.email ?? "OAuth 로그인 사용자"}
+          </p>
+          <button
+            type="button"
+            onClick={signOut}
+            className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600"
+          >
+            로그아웃
+          </button>
+        </header>
+
         {renderTab()}
 
         <nav className="fixed bottom-0 z-40 w-full max-w-[430px] border-t border-slate-200 bg-white px-1 pb-[calc(env(safe-area-inset-bottom)+6px)] pt-1 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">

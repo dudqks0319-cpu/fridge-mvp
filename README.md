@@ -20,6 +20,24 @@ pnpm dev
 
 - 개발 서버: `http://localhost:3000`
 
+## OAuth 로그인 설정 (Google / Kakao / Naver)
+
+1. Supabase 프로젝트 생성 후 **Authentication > Providers**에서 Google/Kakao/Naver를 활성화합니다.
+2. 프로젝트 루트에 `.env.local` 파일을 만들고 아래 값을 넣어 주세요.
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=https://<your-project-ref>.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<your-anon-key>
+```
+
+3. 각 OAuth 제공자 콘솔의 Redirect URL에 아래 주소를 등록합니다.
+
+```text
+https://<your-project-ref>.supabase.co/auth/v1/callback
+```
+
+> 참고: 이 앱은 로그인한 사용자별로 localStorage 키를 분리해 저장합니다.
+
 ## 테스트/검증
 
 ```bash
