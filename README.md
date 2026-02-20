@@ -50,3 +50,16 @@ pnpm build
 
 - Vercel 배포를 기준으로 운영합니다.
 - 완료 후 GitHub + Vercel 링크를 함께 공유합니다.
+
+## Swift 풀스택(iPhone + Swift Backend)
+
+로그인 제외 기능을 Swift로 이식한 버전은 `swift-fullstack/` 폴더를 확인해 주세요.
+
+```bash
+cd swift-fullstack/backend
+swift run Run
+
+cd ../ios
+xcodegen generate
+open FridgeMVPiOS.xcodeproj
+```
