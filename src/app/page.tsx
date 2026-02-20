@@ -7,6 +7,7 @@ import { getSupabaseClient } from "@/lib/supabaseClient";
 type TabKey = "home" | "fridge" | "recommend" | "shopping" | "settings";
 type MeasureMode = "simple" | "precise";
 type NoticeTone = "danger" | "warning" | "info";
+type FridgeFilterStatus = "all" | "safe" | "urgent" | "expired";
 
 type FridgeItem = {
   id: string;
@@ -246,6 +247,20 @@ function getDaysDiff(dateText: string): number {
   return Math.ceil((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 }
 
+function getExpiryState(dateText: string): Exclude<FridgeFilterStatus, "all"> {
+  const diff = getDaysDiff(dateText);
+
+  if (diff < 0) {
+    return "expired";
+  }
+
+  if (diff <= 3) {
+    return "urgent";
+  }
+
+  return "safe";
+}
+
 function getCoupangLink(keyword: string): string {
   return `https://www.coupang.com/np/search?q=${encodeURIComponent(keyword)}`;
 }
@@ -291,6 +306,12 @@ export default function HomePage() {
   const [newEssentialName, setNewEssentialName] = useState("");
   const [showGuide, setShowGuide] = useState(false);
   const [dismissedNoticeIds, setDismissedNoticeIds] = useState<string[]>([]);
+  const [fridgeSearch, setFridgeSearch] = useState("");
+  const [fridgeFilterStatus, setFridgeFilterStatus] = useState<FridgeFilterStatus>("all");
+  const [fridgeFilterCategory, setFridgeFilterCategory] = useState("전체");
+  const [recommendOnlyReady, setRecommendOnlyReady] = useState(false);
+  const [importPayload, setImportPayload] = useState("");
+  const [dataOpsMessage, setDataOpsMessage] = useState<string | null>(null);
 
   const guestStorageKeys = useMemo(() => getStorageKeys(GUEST_STORAGE_USER_ID), []);
 
@@ -438,6 +459,31 @@ export default function HomePage() {
     [fridgeItems],
   );
 
+  const fridgeCategories = useMemo(
+    () => ["전체", ...Array.from(new Set(fridgeItems.map((item) => item.category)))],
+    [fridgeItems],
+  );
+
+  const filteredFridgeItems = useMemo(() => {
+    return sortedFridgeItems.filter((item) => {
+      const matchSearch = item.name.toLowerCase().includes(fridgeSearch.trim().toLowerCase());
+
+      if (!matchSearch) {
+        return false;
+      }
+
+      if (fridgeFilterCategory !== "전체" && item.category !== fridgeFilterCategory) {
+        return false;
+      }
+
+      if (fridgeFilterStatus !== "all" && getExpiryState(item.expiryDate) !== fridgeFilterStatus) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [fridgeFilterCategory, fridgeFilterStatus, fridgeSearch, sortedFridgeItems]);
+
   const recipeCards = useMemo(() => {
     const fridgeNames = fridgeItems.map((item) => item.name);
 
@@ -460,6 +506,11 @@ export default function HomePage() {
       };
     }).sort((a, b) => b.matchRate - a.matchRate);
   }, [fridgeItems]);
+
+  const visibleRecipeCards = useMemo(
+    () => recipeCards.filter((recipe) => (recommendOnlyReady ? recipe.missingMain.length === 0 : true)),
+    [recipeCards, recommendOnlyReady],
+  );
 
   const uncheckedShopping = shoppingList.filter((item) => !item.checked);
   const checkedShopping = shoppingList.filter((item) => item.checked);
@@ -554,6 +605,62 @@ export default function HomePage() {
 
   const removeEssentialItem = (name: string) => {
     setEssentialItems((prev) => prev.filter((item) => item !== name));
+  };
+
+  const exportAppData = async () => {
+    const payload = {
+      fridgeItems,
+      shoppingList,
+      essentialItems,
+      measureMode,
+      exportedAt: new Date().toISOString(),
+    };
+
+    const serialized = JSON.stringify(payload, null, 2);
+    setImportPayload(serialized);
+
+    try {
+      await navigator.clipboard.writeText(serialized);
+      setDataOpsMessage("데이터 백업 JSON을 클립보드에 복사했습니다.");
+    } catch {
+      setDataOpsMessage("데이터 백업 JSON을 아래 텍스트 영역에 준비했습니다.");
+    }
+  };
+
+  const importAppData = () => {
+    if (!importPayload.trim()) {
+      setDataOpsMessage("가져올 JSON 데이터를 먼저 입력해 주세요.");
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(importPayload) as {
+        fridgeItems?: FridgeItem[];
+        shoppingList?: ShoppingItem[];
+        essentialItems?: string[];
+        measureMode?: MeasureMode;
+      };
+
+      if (Array.isArray(parsed.fridgeItems)) {
+        setFridgeItems(parsed.fridgeItems);
+      }
+
+      if (Array.isArray(parsed.shoppingList)) {
+        setShoppingList(parsed.shoppingList);
+      }
+
+      if (Array.isArray(parsed.essentialItems)) {
+        setEssentialItems(parsed.essentialItems);
+      }
+
+      if (parsed.measureMode === "simple" || parsed.measureMode === "precise") {
+        setMeasureMode(parsed.measureMode);
+      }
+
+      setDataOpsMessage("데이터를 성공적으로 가져왔습니다.");
+    } catch {
+      setDataOpsMessage("JSON 형식을 확인해 주세요. 데이터 가져오기에 실패했습니다.");
+    }
   };
 
   const dismissNotice = (noticeId: string) => {
@@ -767,18 +874,58 @@ export default function HomePage() {
         </div>
       ) : null}
 
-      {sortedFridgeItems.length === 0 ? (
+      <div className="space-y-3 rounded-2xl border border-slate-100 bg-white p-3 shadow-sm">
+        <input
+          value={fridgeSearch}
+          onChange={(event) => setFridgeSearch(event.target.value)}
+          placeholder="재료 검색"
+          className="w-full rounded-xl bg-slate-50 px-3 py-2 text-sm outline-none ring-orange-300 focus:ring"
+        />
+
+        <div className="flex flex-wrap gap-2">
+          {([
+            ["all", "전체"],
+            ["urgent", "임박"],
+            ["expired", "만료"],
+            ["safe", "여유"],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setFridgeFilterStatus(key)}
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold ${fridgeFilterStatus === key ? "bg-orange-500 text-white" : "bg-slate-100 text-slate-600"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {fridgeCategories.map((category) => (
+            <button
+              key={category}
+              type="button"
+              onClick={() => setFridgeFilterCategory(category)}
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold ${fridgeFilterCategory === category ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600"}`}
+            >
+              {category}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {filteredFridgeItems.length === 0 ? (
         <div className="py-12 text-center text-slate-400">
           <div className="text-6xl">🧊</div>
           <p className="mt-2 text-xl">
-            냉장고가 비어 있어요.
+            {fridgeItems.length === 0 ? "냉장고가 비어 있어요." : "조건에 맞는 재료가 없어요."}
             <br />
-            재료를 먼저 등록해 주세요.
+            {fridgeItems.length === 0 ? "재료를 먼저 등록해 주세요." : "검색어/필터를 바꿔서 다시 확인해 주세요."}
           </p>
         </div>
       ) : (
         <div className="space-y-3">
-          {sortedFridgeItems.map((item) => {
+          {filteredFridgeItems.map((item) => {
             const diff = getDaysDiff(item.expiryDate);
             const badgeClass = diff < 0
               ? "bg-red-100 text-red-600"
@@ -870,7 +1017,21 @@ export default function HomePage() {
       <h2 className="text-[52px] font-extrabold tracking-tight text-slate-900">오늘 뭐 해먹지?</h2>
       <p className="text-2xl text-slate-500">내 냉장고 재료를 바탕으로 한 추천 메뉴입니다.</p>
 
-      {recipeCards.map((recipe) => (
+      <button
+        type="button"
+        onClick={() => setRecommendOnlyReady((prev) => !prev)}
+        className={`rounded-full px-4 py-2 text-sm font-semibold ${recommendOnlyReady ? "bg-emerald-500 text-white" : "bg-white text-slate-600"}`}
+      >
+        {recommendOnlyReady ? "✅ 지금 바로 가능한 메뉴만" : "전체 메뉴 보기"}
+      </button>
+
+      {visibleRecipeCards.length === 0 ? (
+        <div className="rounded-2xl border border-slate-100 bg-white px-4 py-6 text-center text-slate-500">
+          지금 바로 만들 수 있는 메뉴가 아직 없어요.
+        </div>
+      ) : null}
+
+      {visibleRecipeCards.map((recipe) => (
         <article key={recipe.id} className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
           <div className="flex gap-4">
             <div className="flex h-24 w-24 items-center justify-center rounded-2xl bg-orange-50 text-5xl">{recipe.image}</div>
@@ -1110,6 +1271,39 @@ export default function HomePage() {
             </span>
           ))}
         </div>
+      </section>
+
+      <hr className="border-slate-100" />
+
+      <section className="space-y-3">
+        <h3 className="text-3xl font-bold text-slate-700">💾 데이터 백업/복원</h3>
+        <p className="text-xl text-slate-500">앱 데이터를 JSON으로 저장하거나 다시 불러올 수 있어요.</p>
+
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={exportAppData}
+            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+          >
+            백업 JSON 만들기
+          </button>
+          <button
+            type="button"
+            onClick={importAppData}
+            className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-white"
+          >
+            JSON 가져오기
+          </button>
+        </div>
+
+        <textarea
+          value={importPayload}
+          onChange={(event) => setImportPayload(event.target.value)}
+          placeholder="여기에 백업 JSON을 붙여넣어 주세요"
+          className="h-32 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-orange-400"
+        />
+
+        {dataOpsMessage ? <p className="text-sm text-slate-500">{dataOpsMessage}</p> : null}
       </section>
     </div>
   );
