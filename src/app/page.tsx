@@ -414,6 +414,14 @@ export default function HomePage() {
     shoppingSeq.current = Math.max(shoppingSeq.current, shoppingList.length + 1);
   }, [shoppingList.length]);
 
+  const missingEssentialItems = useMemo(() => {
+    const fridgeNames = fridgeItems.map((item) => item.name.toLowerCase());
+
+    return essentialItems.filter(
+      (name) => !fridgeNames.some((fridgeName) => fridgeName.includes(name.toLowerCase())),
+    );
+  }, [essentialItems, fridgeItems]);
+
   const notices = useMemo<Notice[]>(() => {
     const result: Notice[] = [];
 
@@ -439,21 +447,16 @@ export default function HomePage() {
       });
     }
 
-    const fridgeNames = fridgeItems.map((item) => item.name.toLowerCase());
-    const missingEssential = essentialItems.filter(
-      (name) => !fridgeNames.some((fridgeName) => fridgeName.includes(name.toLowerCase())),
-    );
-
-    if (missingEssential.length > 0) {
+    if (missingEssentialItems.length > 0) {
       result.push({
-        id: `essential:${missingEssential.join(",")}`,
-        message: `필수 재료 부족: ${missingEssential.join(", ")}`,
+        id: `essential:${missingEssentialItems.join(",")}`,
+        message: `필수 재료 부족: ${missingEssentialItems.join(", ")}`,
         tone: "info",
       });
     }
 
     return result.filter((notice) => !dismissedNoticeIds.includes(notice.id));
-  }, [dismissedNoticeIds, essentialItems, fridgeItems]);
+  }, [dismissedNoticeIds, fridgeItems, missingEssentialItems]);
 
   const sortedFridgeItems = useMemo(
     () => [...fridgeItems].sort((a, b) => getDaysDiff(a.expiryDate) - getDaysDiff(b.expiryDate)),
@@ -585,6 +588,11 @@ export default function HomePage() {
 
   const addMissingToShopping = (items: string[], recipeName: string) => {
     items.forEach((itemName) => addShoppingItem(itemName, "레시피 부족 재료", recipeName));
+  };
+
+  const addMissingEssentialToShopping = () => {
+    missingEssentialItems.forEach((itemName) => addShoppingItem(itemName, "필수 재료 부족"));
+    setDataOpsMessage(`부족한 필수 재료 ${missingEssentialItems.length}개를 장보기 목록에 추가했습니다.`);
   };
 
   const toggleShoppingCheck = (id: string) => {
@@ -828,6 +836,20 @@ export default function HomePage() {
             <p className="mt-2 text-4xl font-bold text-slate-800">장보기 목록</p>
           </button>
         </section>
+
+        {missingEssentialItems.length > 0 ? (
+          <section className="rounded-2xl border border-sky-100 bg-sky-50 p-4">
+            <h3 className="text-lg font-bold text-sky-700">부족한 필수 재료를 한 번에 추가할까요?</h3>
+            <p className="mt-1 text-sm text-sky-600">{missingEssentialItems.join(", ")}</p>
+            <button
+              type="button"
+              onClick={addMissingEssentialToShopping}
+              className="mt-3 rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white"
+            >
+              장보기에 한 번에 담기
+            </button>
+          </section>
+        ) : null}
 
         {urgentItems.length > 0 || expiredItems.length > 0 ? (
           <section>
