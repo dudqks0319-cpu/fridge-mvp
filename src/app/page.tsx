@@ -46,6 +46,7 @@ const LEGACY_STORAGE_KEYS = {
   shoppingList: "our-fridge:v1:shopping-list",
   essentialItems: "our-fridge:v1:essential-items",
   measureMode: "our-fridge:v1:measure-mode",
+  quickAddItems: "our-fridge:v1:quick-add-items",
 } as const;
 
 const OAUTH_PROVIDERS = [
@@ -61,6 +62,7 @@ type StorageKeys = {
   shoppingList: string;
   essentialItems: string;
   measureMode: string;
+  quickAddItems: string;
 };
 
 const GUEST_STORAGE_USER_ID = "guest";
@@ -71,6 +73,7 @@ function getStorageKeys(userId: string): StorageKeys {
     shoppingList: `our-fridge:v2:${userId}:shopping-list`,
     essentialItems: `our-fridge:v2:${userId}:essential-items`,
     measureMode: `our-fridge:v2:${userId}:measure-mode`,
+    quickAddItems: `our-fridge:v2:${userId}:quick-add-items`,
   };
 }
 
@@ -92,6 +95,7 @@ function migrateUserStorage(userId: string, guestKeys: StorageKeys): StorageKeys
     ["shoppingList", guestKeys.shoppingList],
     ["essentialItems", guestKeys.essentialItems],
     ["measureMode", guestKeys.measureMode],
+    ["quickAddItems", guestKeys.quickAddItems],
   ];
 
   let migratedFromGuest = false;
@@ -113,6 +117,7 @@ function migrateUserStorage(userId: string, guestKeys: StorageKeys): StorageKeys
     ["shoppingList", LEGACY_STORAGE_KEYS.shoppingList],
     ["essentialItems", LEGACY_STORAGE_KEYS.essentialItems],
     ["measureMode", LEGACY_STORAGE_KEYS.measureMode],
+    ["quickAddItems", LEGACY_STORAGE_KEYS.quickAddItems],
   ];
 
   for (const [field, legacyKey] of legacyEntries) {
@@ -160,6 +165,10 @@ const QUICK_ITEMS: Array<{ title: string; items: QuickItem[] }> = [
     ],
   },
 ];
+
+const QUICK_ITEM_NAME_LIST = Array.from(
+  new Set(QUICK_ITEMS.flatMap((group) => group.items.map((item) => item.name))),
+);
 
 const RECIPES: Recipe[] = RECIPE_CATALOG;
 
@@ -274,6 +283,7 @@ export default function HomePage() {
   const [shoppingList, setShoppingList] = useState<ShoppingItem[]>([]);
   const [essentialItems, setEssentialItems] = useState<string[]>(["계란", "우유", "대파"]);
   const [measureMode, setMeasureMode] = useState<MeasureMode>("simple");
+  const [quickAddEnabledItems, setQuickAddEnabledItems] = useState<string[]>(QUICK_ITEM_NAME_LIST);
   const [activeStorageKeys, setActiveStorageKeys] = useState<StorageKeys | null>(null);
   const [notifEnabled, setNotifEnabled] = useState<boolean>(() => {
     if (typeof window === "undefined" || !("Notification" in window)) {
@@ -361,6 +371,10 @@ export default function HomePage() {
     setShoppingList(loadedShoppingItems);
     setEssentialItems(readJson<string[]>(keys.essentialItems, ["계란", "우유", "대파"]));
 
+    const storedQuickAddItems = readJson<string[]>(keys.quickAddItems, QUICK_ITEM_NAME_LIST);
+    const sanitizedQuickAddItems = storedQuickAddItems.filter((name) => QUICK_ITEM_NAME_LIST.includes(name));
+    setQuickAddEnabledItems(sanitizedQuickAddItems.length > 0 ? sanitizedQuickAddItems : QUICK_ITEM_NAME_LIST);
+
     const storedMode = readJson<string>(keys.measureMode, "simple");
     setMeasureMode(storedMode === "precise" ? "precise" : "simple");
     setDismissedNoticeIds([]);
@@ -399,6 +413,14 @@ export default function HomePage() {
     window.localStorage.setItem(activeStorageKeys.measureMode, JSON.stringify(measureMode));
   }, [activeStorageKeys, measureMode]);
 
+  useEffect(() => {
+    if (!activeStorageKeys) {
+      return;
+    }
+
+    window.localStorage.setItem(activeStorageKeys.quickAddItems, JSON.stringify(quickAddEnabledItems));
+  }, [activeStorageKeys, quickAddEnabledItems]);
+
   const fridgeNamesLower = useMemo(
     () => fridgeItems.map((item) => item.name.toLowerCase()),
     [fridgeItems],
@@ -407,6 +429,21 @@ export default function HomePage() {
   const quickSelectedNames = useMemo(
     () => new Set(fridgeItems.map((item) => item.name.trim().toLowerCase())),
     [fridgeItems],
+  );
+
+  const quickAddEnabledNameSet = useMemo(
+    () => new Set(quickAddEnabledItems),
+    [quickAddEnabledItems],
+  );
+
+  const configuredQuickItems = useMemo(
+    () => QUICK_ITEMS
+      .map((group) => ({
+        ...group,
+        items: group.items.filter((item) => quickAddEnabledNameSet.has(item.name)),
+      }))
+      .filter((group) => group.items.length > 0),
+    [quickAddEnabledNameSet],
   );
 
   const hasOwnedIngredient = (ingredient: string) => {
@@ -589,6 +626,16 @@ export default function HomePage() {
     addFridgeItem(item.name, item.category, dateAfter(item.defaultExpiryDays));
   };
 
+  const toggleQuickAddOption = (itemName: string) => {
+    setQuickAddEnabledItems((prev) => {
+      if (prev.includes(itemName)) {
+        return prev.filter((name) => name !== itemName);
+      }
+
+      return [...prev, itemName];
+    });
+  };
+
   const addManualItem = () => {
     if (!manualExpiryDate) {
       setFridgeActionMessage("유통기한 날짜를 선택해 주세요.");
@@ -749,6 +796,7 @@ export default function HomePage() {
       shoppingList,
       essentialItems,
       measureMode,
+      quickAddEnabledItems,
       exportedAt: new Date().toISOString(),
     };
 
@@ -775,14 +823,15 @@ export default function HomePage() {
         shoppingList?: ShoppingItem[];
         essentialItems?: string[];
         measureMode?: MeasureMode;
+        quickAddEnabledItems?: string[];
       };
 
       if (Array.isArray(parsed.fridgeItems)) {
-        setFridgeItems(parsed.fridgeItems);
+        setFridgeItems(ensureUniqueIds(parsed.fridgeItems, "fridge"));
       }
 
       if (Array.isArray(parsed.shoppingList)) {
-        setShoppingList(parsed.shoppingList);
+        setShoppingList(ensureUniqueIds(parsed.shoppingList, "shopping"));
       }
 
       if (Array.isArray(parsed.essentialItems)) {
@@ -791,6 +840,11 @@ export default function HomePage() {
 
       if (parsed.measureMode === "simple" || parsed.measureMode === "precise") {
         setMeasureMode(parsed.measureMode);
+      }
+
+      if (Array.isArray(parsed.quickAddEnabledItems)) {
+        const sanitizedQuickAddItems = parsed.quickAddEnabledItems.filter((name) => QUICK_ITEM_NAME_LIST.includes(name));
+        setQuickAddEnabledItems(sanitizedQuickAddItems);
       }
 
       setDataOpsMessage("데이터를 성공적으로 가져왔습니다.");
@@ -1195,7 +1249,13 @@ export default function HomePage() {
             </div>
 
             <div className="flex-1 space-y-6 overflow-y-auto pb-10">
-              {QUICK_ITEMS.map((category) => (
+              {configuredQuickItems.length === 0 ? (
+                <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm text-slate-500">
+                  설정에서 빠른 재료 항목을 선택해 주세요.
+                </div>
+              ) : null}
+
+              {configuredQuickItems.map((category) => (
                 <section key={category.title}>
                   <h4 className="mb-2 text-sm font-semibold text-slate-500">{category.title}</h4>
                   <div className="flex flex-wrap gap-2">
@@ -1628,6 +1688,61 @@ export default function HomePage() {
             ))}
           </div>
         ) : null}
+      </section>
+
+      <hr className="border-slate-100" />
+
+      <section className="space-y-3">
+        <h3 className="flex items-center gap-2 text-3xl font-bold text-slate-700">
+          <span aria-hidden="true">⚡</span>
+          빠른 재료 등록 항목
+        </h3>
+        <p className="text-xl text-slate-500">냉장고 화면의 빠른 등록에서 보여줄 재료를 직접 선택하세요.</p>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setQuickAddEnabledItems(QUICK_ITEM_NAME_LIST)}
+            className="rounded-full bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white"
+          >
+            전체 선택
+          </button>
+          <button
+            type="button"
+            onClick={() => setQuickAddEnabledItems([])}
+            className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600"
+          >
+            전체 해제
+          </button>
+          <span className="rounded-full bg-orange-50 px-3 py-1.5 text-xs font-semibold text-orange-600">
+            선택됨 {quickAddEnabledItems.length}개
+          </span>
+        </div>
+
+        <div className="space-y-3 rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
+          {QUICK_ITEMS.map((group) => (
+            <div key={group.title}>
+              <p className="mb-2 text-sm font-semibold text-slate-500">{group.title}</p>
+              <div className="flex flex-wrap gap-2">
+                {group.items.map((item) => {
+                  const enabled = quickAddEnabledNameSet.has(item.name);
+
+                  return (
+                    <button
+                      key={`setting-${item.name}`}
+                      type="button"
+                      onClick={() => toggleQuickAddOption(item.name)}
+                      className={`rounded-full px-3 py-1.5 text-sm font-semibold transition ${enabled ? "bg-orange-100 text-orange-700 ring-1 ring-orange-300" : "bg-slate-100 text-slate-600"}`}
+                    >
+                      {enabled ? "✓ " : "+ "}
+                      {item.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
       </section>
 
       <hr className="border-slate-100" />
