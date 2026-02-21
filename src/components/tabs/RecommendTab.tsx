@@ -74,7 +74,10 @@ export function RecommendTab({ model }: RecommendTabProps) {
           {selectedRecipe.missingMain.length > 0 ? (
             <div className="mb-4 rounded-xl border border-rose-100 bg-rose-50 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-semibold text-rose-500">부족: {selectedRecipe.missingMain.join(", ")}</p>
+                <div>
+                  <p className="text-sm font-semibold text-rose-500">재료 {selectedRecipe.missingMain.length}개만 더 있으면 만들 수 있어요!</p>
+                  <p className="text-xs text-rose-400">부족 재료: {selectedRecipe.missingMain.join(", ")}</p>
+                </div>
                 <button
                   type="button"
                   onClick={() => addMissingToShopping(selectedRecipe.missingMain, selectedRecipe.name)}
@@ -225,7 +228,10 @@ export function RecommendTab({ model }: RecommendTabProps) {
               {recipe.missingMain.length > 0 ? (
                 <div className="mt-3 border-t border-slate-100 pt-3">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm text-rose-400">부족: {recipe.missingMain.join(", ")}</p>
+                    <div>
+                      <p className="text-sm font-semibold text-rose-500">재료 {recipe.missingMain.length}개만 더 있으면 만들 수 있어요!</p>
+                      <p className="text-xs text-rose-400">{recipe.missingMain.slice(0, 2).join(", ")}{recipe.missingMain.length > 2 ? ` 외 ${recipe.missingMain.length - 2}개` : ""}</p>
+                    </div>
                     <button
                       type="button"
                       onTouchStart={(event) => event.stopPropagation()}

@@ -351,6 +351,7 @@ export default function HomePage() {
   const [recipeStepChecked, setRecipeStepChecked] = useState<Record<string, number[]>>({});
   const [fridgeActionMessage, setFridgeActionMessage] = useState<string | null>(null);
   const [recommendActionMessage, setRecommendActionMessage] = useState<string | null>(null);
+  const [shoppingActionMessage, setShoppingActionMessage] = useState<string | null>(null);
   const [editingExpiryTarget, setEditingExpiryTarget] = useState<FridgeItem | null>(null);
   const [editingExpiryDate, setEditingExpiryDate] = useState(() => dateAfter(7));
   const [importPayload, setImportPayload] = useState("");
@@ -895,6 +896,39 @@ export default function HomePage() {
     setShoppingList((prev) => prev.filter((item) => !item.checked));
   };
 
+  const shareShoppingList = async () => {
+    const targetItems = shoppingList.filter((item) => !item.checked);
+
+    if (targetItems.length === 0) {
+      setShoppingActionMessage("공유할 장보기 항목이 없습니다.");
+      return;
+    }
+
+    const text = [
+      "🛒 장보기 목록",
+      ...targetItems.map(
+        (item, index) => `${index + 1}. ${item.name}${item.recipeName ? ` (${item.recipeName})` : ""}`,
+      ),
+    ].join("\n");
+
+    try {
+      if (typeof navigator !== "undefined" && navigator.share) {
+        await navigator.share({
+          title: "장보기 목록",
+          text,
+        });
+        setShoppingActionMessage("장보기 목록을 공유했습니다.");
+        return;
+      }
+
+      await navigator.clipboard.writeText(text);
+      setShoppingActionMessage("장보기 목록을 클립보드에 복사했습니다.");
+    } catch (error) {
+      reportError("shareShoppingList", error);
+      setShoppingActionMessage("공유에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+    }
+  };
+
   const moveCheckedShoppingToFridge = () => {
     const picked = shoppingList.filter((item) => item.checked);
 
@@ -1086,6 +1120,10 @@ export default function HomePage() {
       onGoFridge={() => setTab("fridge")}
       onGoRecommend={() => setTab("recommend")}
       onGoShopping={() => setTab("shopping")}
+      onStartFirstRun={() => {
+        setTab("fridge");
+        setShowQuickAdd(true);
+      }}
       onAddMissingEssentialToShopping={addMissingEssentialToShopping}
       getDaysDiff={getDaysDiff}
       toneClass={toneClass}
@@ -1168,6 +1206,8 @@ export default function HomePage() {
         getCoupangLink,
         removeShoppingItem,
         shoppingList,
+        shareShoppingList,
+        shoppingActionMessage,
       }}
     />
   );

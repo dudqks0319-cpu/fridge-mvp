@@ -8,6 +8,7 @@ type HomeTabProps = {
   onGoFridge: () => void;
   onGoRecommend: () => void;
   onGoShopping: () => void;
+  onStartFirstRun: () => void;
   onAddMissingEssentialToShopping: () => void;
   getDaysDiff: (dateText: string) => number;
   toneClass: (tone: NoticeTone) => string;
@@ -21,6 +22,7 @@ export function HomeTab({
   onGoFridge,
   onGoRecommend,
   onGoShopping,
+  onStartFirstRun,
   onAddMissingEssentialToShopping,
   getDaysDiff,
   toneClass,
@@ -31,6 +33,15 @@ export function HomeTab({
   });
 
   const expiredItems = fridgeItems.filter((item) => getDaysDiff(item.expiryDate) < 0);
+
+  const getBadgeClass = (diff: number) => {
+    if (diff < 0) return "bg-rose-100 text-rose-700";
+    if (diff === 0) return "bg-red-500 text-white";
+    if (diff === 1) return "bg-orange-500 text-white";
+    if (diff <= 3) return "bg-amber-100 text-amber-700";
+    if (diff <= 7) return "bg-yellow-100 text-yellow-700";
+    return "bg-slate-100 text-slate-600";
+  };
 
   return (
     <div className="space-y-6 p-4 pb-24">
@@ -64,6 +75,24 @@ export function HomeTab({
             </div>
           ))}
         </div>
+      ) : null}
+
+      {fridgeItems.length === 0 ? (
+        <section className="space-y-3 rounded-2xl border border-orange-200 bg-orange-50 p-4">
+          <h3 className="text-xl font-bold text-orange-700">처음 오셨군요! 냉장고부터 채워볼까요?</h3>
+          <ol className="list-decimal space-y-1 pl-5 text-sm text-orange-700">
+            <li>빠른 등록(⚡)으로 자주 쓰는 재료 선택</li>
+            <li>유통기한 확인 후 저장</li>
+            <li>추천 메뉴에서 바로 조리 시작</li>
+          </ol>
+          <button
+            type="button"
+            onClick={onStartFirstRun}
+            className="w-full rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-white"
+          >
+            첫 재료 등록 시작하기
+          </button>
+        </section>
       ) : null}
 
       <section className="rounded-[28px] bg-gradient-to-br from-orange-400 to-orange-500 p-5 text-white shadow-md">
@@ -125,7 +154,7 @@ export function HomeTab({
           <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm">
             {[...expiredItems, ...urgentItems].slice(0, 3).map((item) => {
               const diff = getDaysDiff(item.expiryDate);
-              const badgeClass = diff < 0 ? "bg-red-100 text-red-600" : "bg-orange-100 text-orange-600";
+              const badgeClass = getBadgeClass(diff);
 
               return (
                 <div key={item.id} className="flex items-center justify-between border-b border-slate-50 p-3 last:border-b-0">

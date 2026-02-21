@@ -182,10 +182,16 @@ export function FridgeTab({ model }: FridgeTabProps) {
           {filteredFridgeItems.map((item) => {
             const diff = getDaysDiff(item.expiryDate);
             const badgeClass = diff < 0
-              ? "bg-red-100 text-red-600"
-              : diff <= 3
-                ? "bg-orange-100 text-orange-600"
-                : "bg-slate-100 text-slate-600";
+              ? "bg-rose-100 text-rose-700"
+              : diff === 0
+                ? "bg-red-500 text-white"
+                : diff === 1
+                  ? "bg-orange-500 text-white"
+                  : diff <= 3
+                    ? "bg-amber-100 text-amber-700"
+                    : diff <= 7
+                      ? "bg-yellow-100 text-yellow-700"
+                      : "bg-slate-100 text-slate-600";
 
             return (
               <div key={item.id} className="flex items-center justify-between rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">

@@ -17,6 +17,8 @@ type ShoppingTabProps = {
     getCoupangLink: (name: string) => string;
     removeShoppingItem: (id: string) => void;
     shoppingList: ShoppingItem[];
+    shareShoppingList: () => Promise<void>;
+    shoppingActionMessage: string | null;
   };
 };
 
@@ -36,6 +38,8 @@ export function ShoppingTab({ model }: ShoppingTabProps) {
     getCoupangLink,
     removeShoppingItem,
     shoppingList,
+    shareShoppingList,
+    shoppingActionMessage,
   } = model;
 
   return (
@@ -43,6 +47,9 @@ export function ShoppingTab({ model }: ShoppingTabProps) {
       <div className="mb-2 flex items-center justify-between">
         <h2 className="text-5xl font-extrabold text-slate-900">장보기 목록</h2>
         <div className="flex items-center gap-2">
+          <button type="button" onClick={shareShoppingList} className="text-sm text-slate-500">
+            목록 공유
+          </button>
           {checkedShopping.length > 0 ? (
             <>
               <button type="button" onClick={moveCheckedShoppingToFridge} className="text-sm text-blue-500">
@@ -55,6 +62,12 @@ export function ShoppingTab({ model }: ShoppingTabProps) {
           ) : null}
         </div>
       </div>
+
+      {shoppingActionMessage ? (
+        <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+          {shoppingActionMessage}
+        </p>
+      ) : null}
 
       <input
         value={shoppingSearch}
