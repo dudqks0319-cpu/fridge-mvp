@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Provider, Session, SupabaseClient } from "@supabase/supabase-js";
 import { RECIPE_CATALOG, type RecipeCatalogItem, type RecipeCategory } from "@/data/recipeCatalog";
 import { getSupabaseClient } from "@/lib/supabaseClient";
@@ -243,6 +243,25 @@ function toneClass(tone: NoticeTone): string {
   return "border-blue-200 bg-blue-50 text-blue-700";
 }
 
+function createUniqueId(prefix: "fridge" | "shopping"): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function ensureUniqueIds<T extends { id: string }>(items: T[], prefix: "fridge" | "shopping"): T[] {
+  const seen = new Set<string>();
+
+  return items.map((item) => {
+    if (!item.id || seen.has(item.id)) {
+      const nextId = createUniqueId(prefix);
+      seen.add(nextId);
+      return { ...item, id: nextId };
+    }
+
+    seen.add(item.id);
+    return item;
+  });
+}
+
 export default function HomePage() {
   const supabase = useMemo<SupabaseClient | null>(() => getSupabaseClient(), []);
   const [session, setSession] = useState<Session | null>(null);
@@ -281,13 +300,12 @@ export default function HomePage() {
   const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(null);
   const [recipeStepChecked, setRecipeStepChecked] = useState<Record<string, number[]>>({});
   const [fridgeActionMessage, setFridgeActionMessage] = useState<string | null>(null);
+  const [editingExpiryTarget, setEditingExpiryTarget] = useState<FridgeItem | null>(null);
+  const [editingExpiryDate, setEditingExpiryDate] = useState(() => dateAfter(7));
   const [importPayload, setImportPayload] = useState("");
   const [dataOpsMessage, setDataOpsMessage] = useState<string | null>(null);
 
   const guestStorageKeys = useMemo(() => getStorageKeys(GUEST_STORAGE_USER_ID), []);
-
-  const fridgeSeq = useRef(1);
-  const shoppingSeq = useRef(1);
 
   useEffect(() => {
     if (!supabase) {
@@ -334,8 +352,12 @@ export default function HomePage() {
 
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setActiveStorageKeys(keys);
-    setFridgeItems(readJson<FridgeItem[]>(keys.fridgeItems, []));
-    setShoppingList(readJson<ShoppingItem[]>(keys.shoppingList, []));
+
+    const loadedFridgeItems = ensureUniqueIds(readJson<FridgeItem[]>(keys.fridgeItems, []), "fridge");
+    const loadedShoppingItems = ensureUniqueIds(readJson<ShoppingItem[]>(keys.shoppingList, []), "shopping");
+
+    setFridgeItems(loadedFridgeItems);
+    setShoppingList(loadedShoppingItems);
     setEssentialItems(readJson<string[]>(keys.essentialItems, ["계란", "우유", "대파"]));
 
     const storedMode = readJson<string>(keys.measureMode, "simple");
@@ -375,14 +397,6 @@ export default function HomePage() {
 
     window.localStorage.setItem(activeStorageKeys.measureMode, JSON.stringify(measureMode));
   }, [activeStorageKeys, measureMode]);
-
-  useEffect(() => {
-    fridgeSeq.current = Math.max(fridgeSeq.current, fridgeItems.length + 1);
-  }, [fridgeItems.length]);
-
-  useEffect(() => {
-    shoppingSeq.current = Math.max(shoppingSeq.current, shoppingList.length + 1);
-  }, [shoppingList.length]);
 
   const fridgeNamesLower = useMemo(
     () => fridgeItems.map((item) => item.name.toLowerCase()),
@@ -538,14 +552,13 @@ export default function HomePage() {
     }
 
     const item: FridgeItem = {
-      id: `fridge-${fridgeSeq.current}`,
+      id: createUniqueId("fridge"),
       name: trimmed,
       category,
       addedDate: toDateInputValue(new Date()),
       expiryDate,
     };
 
-    fridgeSeq.current += 1;
     setFridgeItems((prev) => [...prev, item]);
     setFridgeSearch("");
     setFridgeFilterStatus("all");
@@ -570,7 +583,43 @@ export default function HomePage() {
   };
 
   const removeFridgeItem = (id: string) => {
+    const target = fridgeItems.find((item) => item.id === id);
+
     setFridgeItems((prev) => prev.filter((item) => item.id !== id));
+
+    if (target) {
+      setFridgeActionMessage(`"${target.name}" 재료를 삭제했습니다.`);
+    }
+
+    if (editingExpiryTarget?.id === id) {
+      setEditingExpiryTarget(null);
+    }
+  };
+
+  const openExpiryEditor = (item: FridgeItem) => {
+    setEditingExpiryTarget(item);
+    setEditingExpiryDate(item.expiryDate);
+  };
+
+  const saveExpiryDate = () => {
+    if (!editingExpiryTarget) {
+      return;
+    }
+
+    if (!editingExpiryDate) {
+      setFridgeActionMessage("유통기한 날짜를 선택해 주세요.");
+      return;
+    }
+
+    setFridgeItems((prev) =>
+      prev.map((item) =>
+        item.id === editingExpiryTarget.id
+          ? { ...item, expiryDate: editingExpiryDate }
+          : item,
+      ),
+    );
+    setFridgeActionMessage(`"${editingExpiryTarget.name}" 유통기한을 ${editingExpiryDate}로 변경했습니다.`);
+    setEditingExpiryTarget(null);
   };
 
   const addShoppingItem = (name: string, reason: string, recipeName?: string) => {
@@ -586,14 +635,13 @@ export default function HomePage() {
       }
 
       const nextItem: ShoppingItem = {
-        id: `shopping-${shoppingSeq.current}`,
+        id: createUniqueId("shopping"),
         name: trimmed,
         reason,
         recipeName,
         checked: false,
       };
 
-      shoppingSeq.current += 1;
       return [...prev, nextItem];
     });
   };
@@ -630,8 +678,8 @@ export default function HomePage() {
 
     setFridgeItems((prev) => [
       ...prev,
-      ...picked.map((item, index) => ({
-        id: `fridge-${fridgeSeq.current + index}`,
+      ...picked.map((item) => ({
+        id: createUniqueId("fridge"),
         name: item.name,
         category: "기타",
         addedDate: toDateInputValue(new Date()),
@@ -639,7 +687,6 @@ export default function HomePage() {
       })),
     ]);
 
-    fridgeSeq.current += picked.length;
     setShoppingList((prev) => prev.filter((item) => !item.checked));
     setDataOpsMessage(`체크된 ${picked.length}개 항목을 냉장고로 이동했습니다.`);
   };
@@ -1035,24 +1082,26 @@ export default function HomePage() {
                   <p className="mt-1 text-base text-slate-400">등록: {item.addedDate}</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className={`rounded-full px-3 py-1 text-xl font-bold ${badgeClass}`}>
-                    {diff < 0 ? `D+${Math.abs(diff)}` : `D-${diff}`}
-                  </span>
                   <button
                     type="button"
-                    onClick={() => {
-                      removeFridgeItem(item.id);
-                      addShoppingItem(item.name, "재료 소진");
-                    }}
-                    className="p-1 text-2xl text-blue-500"
-                    aria-label="장보기로 이동"
+                    onClick={() => openExpiryEditor(item)}
+                    className={`rounded-full px-3 py-1 text-xl font-bold ${badgeClass}`}
+                  >
+                    {diff < 0 ? `D+${Math.abs(diff)}` : `D-${diff}`}
+                  </button>
+                  <a
+                    href={getCoupangLink(item.name)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-full bg-blue-50 p-1.5 text-2xl text-blue-500"
+                    aria-label={`${item.name} 쿠팡 링크`}
                   >
                     🛒
-                  </button>
+                  </a>
                   <button
                     type="button"
                     onClick={() => removeFridgeItem(item.id)}
-                    className="p-1 text-2xl text-slate-300"
+                    className="rounded-full bg-red-50 p-1.5 text-2xl text-red-400"
                     aria-label="삭제"
                   >
                     🗑️
@@ -1063,6 +1112,40 @@ export default function HomePage() {
           })}
         </div>
       )}
+
+      {editingExpiryTarget ? (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40">
+          <div className="w-full max-w-[430px] rounded-t-3xl bg-white p-5">
+            <h3 className="text-xl font-bold text-slate-900">유통기한 수정</h3>
+            <p className="mt-1 text-sm text-slate-500">{editingExpiryTarget.name}의 디데이를 변경합니다.</p>
+
+            <input
+              type="date"
+              value={editingExpiryDate}
+              onChange={(event) => setEditingExpiryDate(event.target.value)}
+              className="mt-4 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-center text-sm outline-none ring-orange-300 focus:ring"
+              aria-label="유통기한 수정"
+            />
+
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setEditingExpiryTarget(null)}
+                className="flex-1 rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-600"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={saveExpiryDate}
+                className="flex-1 rounded-xl bg-orange-500 px-4 py-3 text-sm font-semibold text-white"
+              >
+                저장
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showQuickAdd ? (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50">
