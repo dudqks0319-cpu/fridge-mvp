@@ -16,6 +16,7 @@ export type FridgeItem = {
   category: string;
   addedDate: string;
   expiryDate: string;
+  imageDataUrl?: string;
 };
 
 export type ShoppingItem = {

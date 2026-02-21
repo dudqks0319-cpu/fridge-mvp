@@ -27,6 +27,7 @@ type FridgeItem = {
   category: string;
   addedDate: string;
   expiryDate: string;
+  imageDataUrl?: string;
 };
 
 type ShoppingItem = {
@@ -312,6 +313,56 @@ function validateIngredientName(raw: string): { ok: true; value: string } | { ok
   return { ok: true, value: normalized };
 }
 
+async function imageFileToDataUrl(file: File, maxSizePx = 640, quality = 0.82): Promise<string> {
+  const originalDataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+
+      reject(new Error("이미지 파일을 읽지 못했습니다."));
+    };
+
+    reader.onerror = () => reject(reader.error ?? new Error("이미지 파일 읽기 오류"));
+    reader.readAsDataURL(file);
+  });
+
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const nextImage = new Image();
+
+    nextImage.onload = () => resolve(nextImage);
+    nextImage.onerror = () => reject(new Error("이미지 디코딩 실패"));
+    nextImage.src = originalDataUrl;
+  });
+
+  const longestSide = Math.max(image.width, image.height);
+
+  if (!longestSide || longestSide <= maxSizePx) {
+    return originalDataUrl;
+  }
+
+  const ratio = maxSizePx / longestSide;
+  const width = Math.max(1, Math.round(image.width * ratio));
+  const height = Math.max(1, Math.round(image.height * ratio));
+  const canvas = document.createElement("canvas");
+
+  canvas.width = width;
+  canvas.height = height;
+
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    return originalDataUrl;
+  }
+
+  context.drawImage(image, 0, 0, width, height);
+
+  return canvas.toDataURL("image/jpeg", quality);
+}
+
 export default function HomePage() {
   const supabase = useMemo<SupabaseClient | null>(() => getSupabaseClient(), []);
   const [session, setSession] = useState<Session | null>(null);
@@ -337,6 +388,7 @@ export default function HomePage() {
   const [showManualAdd, setShowManualAdd] = useState(false);
   const [manualName, setManualName] = useState("");
   const [manualExpiryDate, setManualExpiryDate] = useState(() => dateAfter(7));
+  const [manualPhotoDataUrl, setManualPhotoDataUrl] = useState<string | null>(null);
   const [newShoppingName, setNewShoppingName] = useState("");
   const [shoppingSearch, setShoppingSearch] = useState("");
   const [newEssentialName, setNewEssentialName] = useState("");
@@ -723,7 +775,7 @@ export default function HomePage() {
     item.name.toLowerCase().includes(normalizedShoppingSearch),
   );
 
-  const addFridgeItem = (name: string, category: string, expiryDate: string) => {
+  const addFridgeItem = (name: string, category: string, expiryDate: string, imageDataUrl?: string) => {
     const validation = validateIngredientName(name);
 
     if (!validation.ok) {
@@ -737,6 +789,7 @@ export default function HomePage() {
       category,
       addedDate: toDateInputValue(new Date()),
       expiryDate,
+      imageDataUrl,
     };
 
     setFridgeItems((prev) => [...prev, item]);
@@ -778,15 +831,37 @@ export default function HomePage() {
     });
   };
 
+  const setManualPhotoFile = async (file: File | null) => {
+    if (!file) {
+      setManualPhotoDataUrl(null);
+      return;
+    }
+
+    if (!file.type.startsWith("image/")) {
+      setFridgeActionMessage("이미지 파일만 선택해 주세요.");
+      return;
+    }
+
+    try {
+      const nextDataUrl = await imageFileToDataUrl(file);
+      setManualPhotoDataUrl(nextDataUrl);
+      setFridgeActionMessage("재료 사진을 선택했습니다.");
+    } catch (error) {
+      reportError("setManualPhotoFile", error);
+      setFridgeActionMessage("사진을 불러오지 못했습니다. 다시 시도해 주세요.");
+    }
+  };
+
   const addManualItem = () => {
     if (!manualExpiryDate) {
       setFridgeActionMessage("유통기한 날짜를 선택해 주세요.");
       return;
     }
 
-    addFridgeItem(manualName, "기타", manualExpiryDate);
+    addFridgeItem(manualName, "기타", manualExpiryDate, manualPhotoDataUrl ?? undefined);
     setManualName("");
     setManualExpiryDate(dateAfter(7));
+    setManualPhotoDataUrl(null);
     setShowManualAdd(false);
   };
 
@@ -1141,6 +1216,9 @@ export default function HomePage() {
         setManualName,
         manualExpiryDate,
         setManualExpiryDate,
+        manualPhotoDataUrl,
+        setManualPhotoFile,
+        clearManualPhoto: () => setManualPhotoDataUrl(null),
         addManualItem,
         fridgeSearch,
         setFridgeSearch,

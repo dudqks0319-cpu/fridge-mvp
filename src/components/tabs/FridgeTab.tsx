@@ -11,6 +11,9 @@ type FridgeTabProps = {
     setManualName: Dispatch<SetStateAction<string>>;
     manualExpiryDate: string;
     setManualExpiryDate: Dispatch<SetStateAction<string>>;
+    manualPhotoDataUrl: string | null;
+    setManualPhotoFile: (file: File | null) => void;
+    clearManualPhoto: () => void;
     addManualItem: () => void;
     fridgeSearch: string;
     setFridgeSearch: Dispatch<SetStateAction<string>>;
@@ -47,6 +50,9 @@ export function FridgeTab({ model }: FridgeTabProps) {
     setManualName,
     manualExpiryDate,
     setManualExpiryDate,
+    manualPhotoDataUrl,
+    setManualPhotoFile,
+    clearManualPhoto,
     addManualItem,
     fridgeSearch,
     setFridgeSearch,
@@ -97,28 +103,63 @@ export function FridgeTab({ model }: FridgeTabProps) {
       </div>
 
       {showManualAdd ? (
-        <div className="flex gap-2 rounded-2xl border border-slate-100 bg-white p-3 shadow-sm">
-          <input
-            value={manualName}
-            onChange={(event) => setManualName(event.target.value)}
-            placeholder="재료명"
-            className="flex-1 rounded-xl bg-slate-50 px-3 py-2 text-sm outline-none ring-orange-300 focus:ring"
-          />
-          <input
-            type="date"
-            value={manualExpiryDate}
-            onChange={(event) => setManualExpiryDate(event.target.value)}
-            className="w-44 rounded-xl bg-slate-50 px-3 py-2 text-center text-sm outline-none ring-orange-300 focus:ring"
-            aria-label="유통기한 날짜"
-          />
-          <button
-            type="button"
-            onClick={addManualItem}
-            disabled={!manualName.trim() || !manualExpiryDate}
-            className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-          >
-            추가
-          </button>
+        <div className="space-y-3 rounded-2xl border border-slate-100 bg-white p-3 shadow-sm">
+          <div className="flex gap-2">
+            <input
+              value={manualName}
+              onChange={(event) => setManualName(event.target.value)}
+              placeholder="재료명"
+              className="flex-1 rounded-xl bg-slate-50 px-3 py-2 text-sm outline-none ring-orange-300 focus:ring"
+            />
+            <input
+              type="date"
+              value={manualExpiryDate}
+              onChange={(event) => setManualExpiryDate(event.target.value)}
+              className="w-44 rounded-xl bg-slate-50 px-3 py-2 text-center text-sm outline-none ring-orange-300 focus:ring"
+              aria-label="유통기한 날짜"
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="cursor-pointer rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50">
+              사진 선택
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(event) => setManualPhotoFile(event.target.files?.[0] ?? null)}
+              />
+            </label>
+
+            {manualPhotoDataUrl ? (
+              <>
+                <div
+                  className="h-12 w-12 rounded-xl border border-slate-200 bg-cover bg-center"
+                  style={{ backgroundImage: `url(${manualPhotoDataUrl})` }}
+                  role="img"
+                  aria-label="선택한 재료 사진"
+                />
+                <button
+                  type="button"
+                  onClick={clearManualPhoto}
+                  className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600"
+                >
+                  사진 제거
+                </button>
+              </>
+            ) : (
+              <span className="text-xs text-slate-400">사진 없음</span>
+            )}
+
+            <button
+              type="button"
+              onClick={addManualItem}
+              disabled={!manualName.trim() || !manualExpiryDate}
+              className="ml-auto rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              추가
+            </button>
+          </div>
         </div>
       ) : null}
 
@@ -195,9 +236,21 @@ export function FridgeTab({ model }: FridgeTabProps) {
 
             return (
               <div key={item.id} className="flex items-center justify-between rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
-                <div>
-                  <h4 className="text-4xl font-extrabold text-slate-900">{item.name}</h4>
-                  <p className="mt-1 text-base text-slate-400">등록: {item.addedDate}</p>
+                <div className="flex min-w-0 items-center gap-3">
+                  {item.imageDataUrl ? (
+                    <div
+                      className="h-14 w-14 shrink-0 rounded-xl border border-slate-200 bg-cover bg-center"
+                      style={{ backgroundImage: `url(${item.imageDataUrl})` }}
+                      role="img"
+                      aria-label={`${item.name} 사진`}
+                    />
+                  ) : (
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-xl">🥬</div>
+                  )}
+                  <div className="min-w-0">
+                    <h4 className="truncate text-4xl font-extrabold text-slate-900">{item.name}</h4>
+                    <p className="mt-1 text-base text-slate-400">등록: {item.addedDate}</p>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
