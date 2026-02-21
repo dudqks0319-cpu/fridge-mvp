@@ -726,6 +726,10 @@ export default function HomePage() {
     });
   };
 
+  const toggleRecipeCard = (recipeId: string) => {
+    setSelectedRecipeId((prev) => (prev === recipeId ? null : recipeId));
+  };
+
   const getCheckedStepCount = (recipeId: string) => recipeStepChecked[recipeId]?.length ?? 0;
 
   const toggleNotification = async () => {
@@ -1135,7 +1139,25 @@ export default function HomePage() {
         const isExpanded = selectedRecipeId === recipe.id;
 
         return (
-          <article key={recipe.id} className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
+          <article
+            key={recipe.id}
+            role="button"
+            tabIndex={0}
+            onClick={(event) => {
+              const target = event.target as HTMLElement;
+              if (target.closest("button, a")) {
+                return;
+              }
+              toggleRecipeCard(recipe.id);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                toggleRecipeCard(recipe.id);
+              }
+            }}
+            className="cursor-pointer rounded-3xl border border-slate-100 bg-white p-4 shadow-sm"
+          >
             <div className="flex gap-4">
               <div className="flex h-24 w-24 items-center justify-center rounded-2xl bg-orange-50 text-5xl">{recipe.image}</div>
               <div className="flex-1">
@@ -1170,17 +1192,14 @@ export default function HomePage() {
                 )}
 
                 <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedRecipeId((prev) => (prev === recipe.id ? null : recipe.id))}
-                    className="rounded-full bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white"
-                  >
-                    {isExpanded ? "조리법 접기" : "조리법 보기"}
-                  </button>
+                  <span className="rounded-full bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white">
+                    {isExpanded ? "카드 다시 누르면 접혀요" : "카드 아무 곳이나 누르면 조리법이 열려요"}
+                  </span>
                   <a
                     href={recipe.sourceUrl}
                     target="_blank"
                     rel="noreferrer"
+                    onClick={(event) => event.stopPropagation()}
                     className="rounded-full bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-600"
                   >
                     원문 레시피
