@@ -1423,6 +1423,7 @@ export default function HomePage() {
                       <p className="text-sm text-rose-400">부족: {recipe.missingMain.join(", ")}</p>
                       <button
                         type="button"
+                        onTouchStart={(event) => event.stopPropagation()}
                         onClick={(event) => {
                           event.stopPropagation();
                           addMissingToShopping(recipe.missingMain, recipe.name);
@@ -1445,6 +1446,7 @@ export default function HomePage() {
                     href={recipe.sourceUrl}
                     target="_blank"
                     rel="noreferrer"
+                    onTouchStart={(event) => event.stopPropagation()}
                     onClick={(event) => event.stopPropagation()}
                     className="rounded-full bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-600"
                   >
