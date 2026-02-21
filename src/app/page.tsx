@@ -384,13 +384,24 @@ export default function HomePage() {
     shoppingSeq.current = Math.max(shoppingSeq.current, shoppingList.length + 1);
   }, [shoppingList.length]);
 
-  const missingEssentialItems = useMemo(() => {
-    const fridgeNames = fridgeItems.map((item) => item.name.toLowerCase());
+  const fridgeNamesLower = useMemo(
+    () => fridgeItems.map((item) => item.name.toLowerCase()),
+    [fridgeItems],
+  );
 
-    return essentialItems.filter(
-      (name) => !fridgeNames.some((fridgeName) => fridgeName.includes(name.toLowerCase())),
+  const hasOwnedIngredient = (ingredient: string) => {
+    const normalized = ingredient.toLowerCase();
+
+    return fridgeNamesLower.some(
+      (fridgeName) => normalized.includes(fridgeName) || fridgeName.includes(normalized),
     );
-  }, [essentialItems, fridgeItems]);
+  };
+
+  const missingEssentialItems = useMemo(() => {
+    return essentialItems.filter(
+      (name) => !fridgeNamesLower.some((fridgeName) => fridgeName.includes(name.toLowerCase())),
+    );
+  }, [essentialItems, fridgeNamesLower]);
 
   const notices = useMemo<Notice[]>(() => {
     const result: Notice[] = [];
@@ -1179,6 +1190,25 @@ export default function HomePage() {
 
                 {isExpanded ? (
                   <div className="mt-3 space-y-2 rounded-xl bg-slate-50 p-3">
+                    <div className="space-y-2 rounded-lg bg-white/80 p-2">
+                      <p className="text-xs font-semibold text-slate-500">레시피 재료</p>
+                      <div className="flex flex-wrap gap-2">
+                        {Array.from(new Set([...recipe.mainIngredients, ...recipe.subIngredients])).map((ingredient) => {
+                          const owned = hasOwnedIngredient(ingredient);
+
+                          return (
+                            <span
+                              key={`${recipe.id}-${ingredient}`}
+                              className={`rounded-full px-2 py-1 text-xs font-semibold ${owned ? "bg-red-50 text-red-600" : "bg-slate-100 text-slate-600"}`}
+                            >
+                              {ingredient}
+                            </span>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[11px] text-slate-400">빨간 글씨 = 내 냉장고에 있는 재료</p>
+                    </div>
+
                     <p className="text-xs font-semibold text-slate-500">
                       조리 진행도: {getCheckedStepCount(recipe.id)} / {recipe.steps.length}
                     </p>
