@@ -470,7 +470,8 @@ export default function HomePage() {
         (ingredient) => !fridgeNames.some((fridgeName) => ingredient.includes(fridgeName) || fridgeName.includes(ingredient)),
       );
 
-      const matchRate = Math.round((hasMain.length / recipe.mainIngredients.length) * 100);
+      const denominator = Math.max(recipe.mainIngredients.length, 1);
+      const matchRate = Math.round((hasMain.length / denominator) * 100);
 
       return {
         ...recipe,
