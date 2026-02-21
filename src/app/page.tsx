@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Provider, Session, SupabaseClient } from "@supabase/supabase-js";
+import { RECIPE_CATALOG, type RecipeCatalogItem, type RecipeCategory } from "@/data/recipeCatalog";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 
 type TabKey = "home" | "fridge" | "recommend" | "shopping" | "settings";
@@ -31,15 +32,8 @@ type Notice = {
   tone: NoticeTone;
 };
 
-type Recipe = {
-  id: string;
-  name: string;
-  image: string;
-  time: string;
-  difficulty: "쉬움" | "보통";
-  mainIngredients: string[];
-  subIngredients: string[];
-};
+type Recipe = RecipeCatalogItem;
+type RecipeFilterCategory = "all" | RecipeCategory;
 
 type QuickItem = {
   name: string;
@@ -167,35 +161,7 @@ const QUICK_ITEMS: Array<{ title: string; items: QuickItem[] }> = [
   },
 ];
 
-const RECIPES: Recipe[] = [
-  {
-    id: "r1",
-    name: "돼지고기 김치찌개",
-    image: "🥘",
-    time: "20분",
-    difficulty: "쉬움",
-    mainIngredients: ["돼지고기 삼겹살", "김치", "양파", "대파"],
-    subIngredients: ["다진마늘", "고춧가루", "국간장"],
-  },
-  {
-    id: "r2",
-    name: "계란말이",
-    image: "🍳",
-    time: "10분",
-    difficulty: "쉬움",
-    mainIngredients: ["계란", "대파"],
-    subIngredients: ["소금", "식용유"],
-  },
-  {
-    id: "r3",
-    name: "스팸 볶음밥",
-    image: "🍚",
-    time: "15분",
-    difficulty: "쉬움",
-    mainIngredients: ["밥", "스팸", "계란", "양파"],
-    subIngredients: ["진간장", "참기름", "식용유"],
-  },
-];
+const RECIPES: Recipe[] = RECIPE_CATALOG;
 
 const MEASURE_GUIDE = [
   { icon: "🥄", title: "큰술 (T)", value: "밥숟가락 1개 = 약 15ml" },
@@ -301,7 +267,7 @@ export default function HomePage() {
   const [showQuickAdd, setShowQuickAdd] = useState(false);
   const [showManualAdd, setShowManualAdd] = useState(false);
   const [manualName, setManualName] = useState("");
-  const [manualExpiryDays, setManualExpiryDays] = useState(7);
+  const [manualExpiryDate, setManualExpiryDate] = useState(() => dateAfter(7));
   const [newShoppingName, setNewShoppingName] = useState("");
   const [shoppingSearch, setShoppingSearch] = useState("");
   const [newEssentialName, setNewEssentialName] = useState("");
@@ -311,6 +277,9 @@ export default function HomePage() {
   const [fridgeFilterStatus, setFridgeFilterStatus] = useState<FridgeFilterStatus>("all");
   const [fridgeFilterCategory, setFridgeFilterCategory] = useState("전체");
   const [recommendOnlyReady, setRecommendOnlyReady] = useState(false);
+  const [recipeCategoryFilter, setRecipeCategoryFilter] = useState<RecipeFilterCategory>("all");
+  const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(null);
+  const [fridgeActionMessage, setFridgeActionMessage] = useState<string | null>(null);
   const [importPayload, setImportPayload] = useState("");
   const [dataOpsMessage, setDataOpsMessage] = useState<string | null>(null);
 
@@ -512,8 +481,19 @@ export default function HomePage() {
   }, [fridgeItems]);
 
   const visibleRecipeCards = useMemo(
-    () => recipeCards.filter((recipe) => (recommendOnlyReady ? recipe.missingMain.length === 0 : true)),
-    [recipeCards, recommendOnlyReady],
+    () =>
+      recipeCards.filter((recipe) => {
+        if (recommendOnlyReady && recipe.missingMain.length > 0) {
+          return false;
+        }
+
+        if (recipeCategoryFilter !== "all" && recipe.category !== recipeCategoryFilter) {
+          return false;
+        }
+
+        return true;
+      }),
+    [recipeCards, recommendOnlyReady, recipeCategoryFilter],
   );
 
   const uncheckedShopping = shoppingList.filter((item) => !item.checked);
@@ -527,7 +507,7 @@ export default function HomePage() {
     item.name.toLowerCase().includes(normalizedShoppingSearch),
   );
 
-  const addFridgeItem = (name: string, category: string, expiryDays: number) => {
+  const addFridgeItem = (name: string, category: string, expiryDate: string) => {
     const trimmed = name.trim();
 
     if (!trimmed) {
@@ -539,21 +519,30 @@ export default function HomePage() {
       name: trimmed,
       category,
       addedDate: toDateInputValue(new Date()),
-      expiryDate: dateAfter(expiryDays),
+      expiryDate,
     };
 
     fridgeSeq.current += 1;
     setFridgeItems((prev) => [...prev, item]);
+    setFridgeSearch("");
+    setFridgeFilterStatus("all");
+    setFridgeFilterCategory("전체");
+    setFridgeActionMessage(`"${trimmed}" 재료를 추가했습니다.`);
   };
 
   const addQuickItem = (item: QuickItem) => {
-    addFridgeItem(item.name, item.category, item.defaultExpiryDays);
+    addFridgeItem(item.name, item.category, dateAfter(item.defaultExpiryDays));
   };
 
   const addManualItem = () => {
-    addFridgeItem(manualName, "기타", manualExpiryDays);
+    if (!manualExpiryDate) {
+      setFridgeActionMessage("유통기한 날짜를 선택해 주세요.");
+      return;
+    }
+
+    addFridgeItem(manualName, "기타", manualExpiryDate);
     setManualName("");
-    setManualExpiryDays(7);
+    setManualExpiryDate(dateAfter(7));
     setShowManualAdd(false);
   };
 
@@ -911,17 +900,17 @@ export default function HomePage() {
             className="flex-1 rounded-xl bg-slate-50 px-3 py-2 text-sm outline-none ring-orange-300 focus:ring"
           />
           <input
-            type="number"
-            min={1}
-            value={manualExpiryDays}
-            onChange={(event) => setManualExpiryDays(Number(event.target.value) || 1)}
-            className="w-20 rounded-xl bg-slate-50 px-3 py-2 text-center text-sm outline-none ring-orange-300 focus:ring"
-            aria-label="유통기한 일수"
+            type="date"
+            value={manualExpiryDate}
+            onChange={(event) => setManualExpiryDate(event.target.value)}
+            className="w-44 rounded-xl bg-slate-50 px-3 py-2 text-center text-sm outline-none ring-orange-300 focus:ring"
+            aria-label="유통기한 날짜"
           />
           <button
             type="button"
             onClick={addManualItem}
-            className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white"
+            disabled={!manualName.trim() || !manualExpiryDate}
+            className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             추가
           </button>
@@ -967,6 +956,12 @@ export default function HomePage() {
           ))}
         </div>
       </div>
+
+      {fridgeActionMessage ? (
+        <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+          {fridgeActionMessage}
+        </p>
+      ) : null}
 
       {filteredFridgeItems.length === 0 ? (
         <div className="py-12 text-center text-slate-400">
@@ -1071,51 +1066,108 @@ export default function HomePage() {
       <h2 className="text-[52px] font-extrabold tracking-tight text-slate-900">오늘 뭐 해먹지?</h2>
       <p className="text-2xl text-slate-500">내 냉장고 재료를 바탕으로 한 추천 메뉴입니다.</p>
 
-      <button
-        type="button"
-        onClick={() => setRecommendOnlyReady((prev) => !prev)}
-        className={`rounded-full px-4 py-2 text-sm font-semibold ${recommendOnlyReady ? "bg-emerald-500 text-white" : "bg-white text-slate-600"}`}
-      >
-        {recommendOnlyReady ? "✅ 지금 바로 가능한 메뉴만" : "전체 메뉴 보기"}
-      </button>
+      <div className="flex flex-wrap gap-2">
+        {([
+          ["all", "전체"],
+          ["general", "일반요리"],
+          ["baby", "영유아"],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setRecipeCategoryFilter(key)}
+            className={`rounded-full px-4 py-2 text-sm font-semibold ${recipeCategoryFilter === key ? "bg-slate-900 text-white" : "bg-white text-slate-600"}`}
+          >
+            {label}
+          </button>
+        ))}
+
+        <button
+          type="button"
+          onClick={() => setRecommendOnlyReady((prev) => !prev)}
+          className={`rounded-full px-4 py-2 text-sm font-semibold ${recommendOnlyReady ? "bg-emerald-500 text-white" : "bg-white text-slate-600"}`}
+        >
+          {recommendOnlyReady ? "✅ 지금 바로 가능한 메뉴만" : "전체 메뉴 보기"}
+        </button>
+      </div>
+
+      <p className="text-sm text-slate-400">총 {visibleRecipeCards.length}개 레시피를 표시 중입니다.</p>
 
       {visibleRecipeCards.length === 0 ? (
         <div className="rounded-2xl border border-slate-100 bg-white px-4 py-6 text-center text-slate-500">
-          지금 바로 만들 수 있는 메뉴가 아직 없어요.
+          조건에 맞는 메뉴가 아직 없어요.
         </div>
       ) : null}
 
-      {visibleRecipeCards.map((recipe) => (
-        <article key={recipe.id} className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
-          <div className="flex gap-4">
-            <div className="flex h-24 w-24 items-center justify-center rounded-2xl bg-orange-50 text-5xl">{recipe.image}</div>
-            <div className="flex-1">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <h3 className="text-5xl font-extrabold text-slate-900">{recipe.name}</h3>
-                <span className="rounded-full bg-rose-50 px-3 py-1 text-2xl font-bold text-rose-600">일치율 {recipe.matchRate}%</span>
-              </div>
-              <p className="mt-2 text-2xl text-slate-500">⏱ {recipe.time} &nbsp; ⭐ {recipe.difficulty}</p>
+      {visibleRecipeCards.map((recipe) => {
+        const isExpanded = selectedRecipeId === recipe.id;
 
-              {recipe.missingMain.length > 0 ? (
-                <div className="mt-3 border-t border-slate-100 pt-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-xl text-rose-400">부족: {recipe.missingMain.join(", ")}</p>
-                    <button
-                      type="button"
-                      onClick={() => addMissingToShopping(recipe.missingMain, recipe.name)}
-                      className="rounded-full bg-orange-500 px-4 py-2 text-sm font-semibold text-white"
-                    >
-                      장보기
-                    </button>
-                  </div>
+        return (
+          <article key={recipe.id} className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
+            <div className="flex gap-4">
+              <div className="flex h-24 w-24 items-center justify-center rounded-2xl bg-orange-50 text-5xl">{recipe.image}</div>
+              <div className="flex-1">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <h3 className="text-3xl font-extrabold text-slate-900">{recipe.name}</h3>
+                  <span className="rounded-full bg-rose-50 px-3 py-1 text-sm font-bold text-rose-600">일치율 {recipe.matchRate}%</span>
                 </div>
-              ) : (
-                <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">지금 바로 만들 수 있어요 🎉</p>
-              )}
+
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-slate-500">
+                  <span>⏱ {recipe.time}</span>
+                  <span>⭐ {recipe.difficulty}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${recipe.category === "baby" ? "bg-sky-100 text-sky-700" : "bg-orange-100 text-orange-700"}`}>
+                    {recipe.category === "baby" ? "영유아" : "일반요리"}
+                  </span>
+                </div>
+
+                {recipe.missingMain.length > 0 ? (
+                  <div className="mt-3 border-t border-slate-100 pt-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm text-rose-400">부족: {recipe.missingMain.join(", ")}</p>
+                      <button
+                        type="button"
+                        onClick={() => addMissingToShopping(recipe.missingMain, recipe.name)}
+                        className="rounded-full bg-orange-500 px-4 py-2 text-sm font-semibold text-white"
+                      >
+                        장보기
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">지금 바로 만들 수 있어요 🎉</p>
+                )}
+
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedRecipeId((prev) => (prev === recipe.id ? null : recipe.id))}
+                    className="rounded-full bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white"
+                  >
+                    {isExpanded ? "조리법 접기" : "조리법 보기"}
+                  </button>
+                  <a
+                    href={recipe.sourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-full bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-600"
+                  >
+                    원문 레시피
+                  </a>
+                  <span className="text-xs text-slate-400">출처: {recipe.source}</span>
+                </div>
+
+                {isExpanded ? (
+                  <ol className="mt-3 list-inside list-decimal space-y-1 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
+                    {recipe.steps.map((step, index) => (
+                      <li key={`${recipe.id}-step-${index}`}>{step}</li>
+                    ))}
+                  </ol>
+                ) : null}
+              </div>
             </div>
-          </div>
-        </article>
-      ))}
+          </article>
+        );
+      })}
     </div>
   );
 
