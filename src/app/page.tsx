@@ -1,9 +1,20 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Provider, Session, SupabaseClient } from "@supabase/supabase-js";
 import { RECIPE_CATALOG, type RecipeCatalogItem, type RecipeCategory } from "@/data/recipeCatalog";
 import { getSupabaseClient } from "@/lib/supabaseClient";
+import {
+  isTableOrPolicyError,
+  loadUserAppState,
+  saveUserAppState,
+  type PersistedAppState,
+} from "@/lib/supabaseState";
+import { HomeTab } from "@/components/tabs/HomeTab";
+import { FridgeTab } from "@/components/tabs/FridgeTab";
+import { RecommendTab } from "@/components/tabs/RecommendTab";
+import { ShoppingTab } from "@/components/tabs/ShoppingTab";
+import { SettingsTab } from "@/components/tabs/SettingsTab";
 
 type TabKey = "home" | "fridge" | "recommend" | "shopping" | "settings";
 type MeasureMode = "simple" | "precise";
@@ -192,7 +203,8 @@ function readJson<T>(key: string, fallback: T): T {
 
   try {
     return JSON.parse(raw) as T;
-  } catch {
+  } catch (error) {
+    reportError(`readJson(${key})`, error);
     return fallback;
   }
 }
@@ -271,6 +283,35 @@ function ensureUniqueIds<T extends { id: string }>(items: T[], prefix: "fridge" 
   });
 }
 
+const INGREDIENT_NAME_MAX_LENGTH = 30;
+const INGREDIENT_NAME_PATTERN = /^[\p{L}\p{N}\s()\-·,./]+$/u;
+
+function reportError(scope: string, error: unknown): void {
+  console.error(`[fridge-mvp] ${scope}`, error);
+}
+
+function normalizeIngredientName(raw: string): string {
+  return raw.replace(/\s+/g, " ").trim();
+}
+
+function validateIngredientName(raw: string): { ok: true; value: string } | { ok: false; reason: string } {
+  const normalized = normalizeIngredientName(raw);
+
+  if (!normalized) {
+    return { ok: false, reason: "재료명을 입력해 주세요." };
+  }
+
+  if (normalized.length > INGREDIENT_NAME_MAX_LENGTH) {
+    return { ok: false, reason: `재료명은 ${INGREDIENT_NAME_MAX_LENGTH}자 이하로 입력해 주세요.` };
+  }
+
+  if (!INGREDIENT_NAME_PATTERN.test(normalized)) {
+    return { ok: false, reason: "재료명에는 한글/영문/숫자와 기본 기호(-,/,.)만 사용할 수 있어요." };
+  }
+
+  return { ok: true, value: normalized };
+}
+
 export default function HomePage() {
   const supabase = useMemo<SupabaseClient | null>(() => getSupabaseClient(), []);
   const [session, setSession] = useState<Session | null>(null);
@@ -284,7 +325,6 @@ export default function HomePage() {
   const [essentialItems, setEssentialItems] = useState<string[]>(["계란", "우유", "대파"]);
   const [measureMode, setMeasureMode] = useState<MeasureMode>("simple");
   const [quickAddEnabledItems, setQuickAddEnabledItems] = useState<string[]>(QUICK_ITEM_NAME_LIST);
-  const [activeStorageKeys, setActiveStorageKeys] = useState<StorageKeys | null>(null);
   const [notifEnabled, setNotifEnabled] = useState<boolean>(() => {
     if (typeof window === "undefined" || !("Notification" in window)) {
       return false;
@@ -317,6 +357,8 @@ export default function HomePage() {
   const [dataOpsMessage, setDataOpsMessage] = useState<string | null>(null);
 
   const guestStorageKeys = useMemo(() => getStorageKeys(GUEST_STORAGE_USER_ID), []);
+  const activeStorageKeys = session?.user?.id ? getStorageKeys(session.user.id) : guestStorageKeys;
+  const supabaseSyncBlockedRef = useRef(true);
 
   useEffect(() => {
     if (!supabase) {
@@ -357,74 +399,164 @@ export default function HomePage() {
   }, [supabase]);
 
   useEffect(() => {
+    let mounted = true;
+    supabaseSyncBlockedRef.current = true;
+
     const keys = session?.user?.id
       ? migrateUserStorage(session.user.id, guestStorageKeys)
       : guestStorageKeys;
 
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setActiveStorageKeys(keys);
+    const applyPersistedState = (state: PersistedAppState) => {
+      if (Array.isArray(state.fridgeItems)) {
+        setFridgeItems(ensureUniqueIds(state.fridgeItems as FridgeItem[], "fridge"));
+      }
 
-    const loadedFridgeItems = ensureUniqueIds(readJson<FridgeItem[]>(keys.fridgeItems, []), "fridge");
-    const loadedShoppingItems = ensureUniqueIds(readJson<ShoppingItem[]>(keys.shoppingList, []), "shopping");
+      if (Array.isArray(state.shoppingList)) {
+        setShoppingList(ensureUniqueIds(state.shoppingList as ShoppingItem[], "shopping"));
+      }
 
-    setFridgeItems(loadedFridgeItems);
-    setShoppingList(loadedShoppingItems);
-    setEssentialItems(readJson<string[]>(keys.essentialItems, ["계란", "우유", "대파"]));
+      if (Array.isArray(state.essentialItems)) {
+        setEssentialItems(state.essentialItems);
+      }
 
-    const storedQuickAddItems = readJson<string[]>(keys.quickAddItems, QUICK_ITEM_NAME_LIST);
-    const sanitizedQuickAddItems = storedQuickAddItems.filter((name) => QUICK_ITEM_NAME_LIST.includes(name));
-    setQuickAddEnabledItems(sanitizedQuickAddItems.length > 0 ? sanitizedQuickAddItems : QUICK_ITEM_NAME_LIST);
+      if (state.measureMode === "simple" || state.measureMode === "precise") {
+        setMeasureMode(state.measureMode);
+      }
 
-    const storedMode = readJson<string>(keys.measureMode, "simple");
-    setMeasureMode(storedMode === "precise" ? "precise" : "simple");
-    setDismissedNoticeIds([]);
-    setTab("home");
-  }, [guestStorageKeys, session?.user?.id]);
+      if (Array.isArray(state.quickAddEnabledItems)) {
+        const sanitizedQuickAddItems = state.quickAddEnabledItems.filter((name) => QUICK_ITEM_NAME_LIST.includes(name));
+        setQuickAddEnabledItems(sanitizedQuickAddItems);
+      }
+    };
+
+    const hydrateState = async () => {
+      const loadedFridgeItems = ensureUniqueIds(readJson<FridgeItem[]>(keys.fridgeItems, []), "fridge");
+      const loadedShoppingItems = ensureUniqueIds(readJson<ShoppingItem[]>(keys.shoppingList, []), "shopping");
+
+      setFridgeItems(loadedFridgeItems);
+      setShoppingList(loadedShoppingItems);
+      setEssentialItems(readJson<string[]>(keys.essentialItems, ["계란", "우유", "대파"]));
+
+      const storedQuickAddItems = readJson<string[]>(keys.quickAddItems, QUICK_ITEM_NAME_LIST);
+      const sanitizedQuickAddItems = storedQuickAddItems.filter((name) => QUICK_ITEM_NAME_LIST.includes(name));
+      const hasStoredQuickAddKey = typeof window !== "undefined" && window.localStorage.getItem(keys.quickAddItems) !== null;
+      setQuickAddEnabledItems(hasStoredQuickAddKey ? sanitizedQuickAddItems : QUICK_ITEM_NAME_LIST);
+
+      const storedMode = readJson<string>(keys.measureMode, "simple");
+      setMeasureMode(storedMode === "precise" ? "precise" : "simple");
+      setDismissedNoticeIds([]);
+      setTab("home");
+
+      if (session?.user?.id && supabase) {
+        try {
+          const remoteState = await loadUserAppState(supabase, session.user.id);
+
+          if (mounted && remoteState) {
+            applyPersistedState(remoteState);
+          }
+        } catch (error) {
+          if (!mounted) {
+            return;
+          }
+
+          if (isTableOrPolicyError(error as { code?: string; message?: string })) {
+            setDataOpsMessage("Supabase 동기화 테이블 또는 RLS 정책이 없어 로컬 저장 모드로 동작 중입니다.");
+          } else {
+            reportError("loadUserAppState", error);
+            setDataOpsMessage("Supabase 동기화 중 오류가 발생해 로컬 저장 모드로 동작합니다.");
+          }
+        }
+      }
+
+      if (mounted) {
+        supabaseSyncBlockedRef.current = false;
+      }
+    };
+
+    hydrateState();
+
+    return () => {
+      mounted = false;
+      supabaseSyncBlockedRef.current = true;
+    };
+  }, [guestStorageKeys, session?.user?.id, supabase]);
 
   useEffect(() => {
-    if (!activeStorageKeys) {
-      return;
-    }
-
     window.localStorage.setItem(activeStorageKeys.fridgeItems, JSON.stringify(fridgeItems));
   }, [activeStorageKeys, fridgeItems]);
 
   useEffect(() => {
-    if (!activeStorageKeys) {
-      return;
-    }
-
     window.localStorage.setItem(activeStorageKeys.shoppingList, JSON.stringify(shoppingList));
   }, [activeStorageKeys, shoppingList]);
 
   useEffect(() => {
-    if (!activeStorageKeys) {
-      return;
-    }
-
     window.localStorage.setItem(activeStorageKeys.essentialItems, JSON.stringify(essentialItems));
   }, [activeStorageKeys, essentialItems]);
 
   useEffect(() => {
-    if (!activeStorageKeys) {
-      return;
-    }
-
     window.localStorage.setItem(activeStorageKeys.measureMode, JSON.stringify(measureMode));
   }, [activeStorageKeys, measureMode]);
 
   useEffect(() => {
-    if (!activeStorageKeys) {
-      return;
-    }
-
     window.localStorage.setItem(activeStorageKeys.quickAddItems, JSON.stringify(quickAddEnabledItems));
   }, [activeStorageKeys, quickAddEnabledItems]);
 
+  useEffect(() => {
+    if (!session?.user?.id || !supabase || supabaseSyncBlockedRef.current) {
+      return;
+    }
+
+    const payload: PersistedAppState = {
+      fridgeItems,
+      shoppingList,
+      essentialItems,
+      measureMode,
+      quickAddEnabledItems,
+    };
+
+    const syncTimer = window.setTimeout(async () => {
+      try {
+        await saveUserAppState(supabase, session.user.id, payload);
+      } catch (error) {
+        if (isTableOrPolicyError(error as { code?: string; message?: string })) {
+          setDataOpsMessage("Supabase 동기화 테이블 또는 RLS 정책이 없어 로컬 저장 모드로 동작 중입니다.");
+        } else {
+          reportError("saveUserAppState", error);
+          setDataOpsMessage("Supabase 저장 중 오류가 발생해 로컬 저장 모드로 동작합니다.");
+        }
+      }
+    }, 250);
+
+    return () => window.clearTimeout(syncTimer);
+  }, [
+    essentialItems,
+    fridgeItems,
+    measureMode,
+    quickAddEnabledItems,
+    session?.user?.id,
+    shoppingList,
+    supabase,
+  ]);
+
   const fridgeNamesLower = useMemo(
-    () => fridgeItems.map((item) => item.name.toLowerCase()),
+    () => fridgeItems.map((item) => normalizeIngredientName(item.name).toLowerCase()),
     [fridgeItems],
   );
+
+  const fridgeTokenIndex = useMemo(() => {
+    const tokenSet = new Set<string>();
+
+    fridgeNamesLower.forEach((name) => {
+      tokenSet.add(name);
+      name
+        .split(/[\s,./()]+/)
+        .map((token) => token.trim())
+        .filter(Boolean)
+        .forEach((token) => tokenSet.add(token));
+    });
+
+    return tokenSet;
+  }, [fridgeNamesLower]);
 
   const quickSelectedNames = useMemo(
     () => new Set(fridgeItems.map((item) => item.name.trim().toLowerCase())),
@@ -446,13 +578,28 @@ export default function HomePage() {
     [quickAddEnabledNameSet],
   );
 
-  const hasOwnedIngredient = (ingredient: string) => {
-    const normalized = ingredient.toLowerCase();
+  const ingredientMatchesFridge = useCallback((ingredient: string) => {
+    const normalized = normalizeIngredientName(ingredient).toLowerCase();
+
+    if (fridgeTokenIndex.has(normalized)) {
+      return true;
+    }
+
+    const ingredientTokens = normalized
+      .split(/[\s,./()]+/)
+      .map((token) => token.trim())
+      .filter(Boolean);
+
+    if (ingredientTokens.some((token) => fridgeTokenIndex.has(token))) {
+      return true;
+    }
 
     return fridgeNamesLower.some(
       (fridgeName) => normalized.includes(fridgeName) || fridgeName.includes(normalized),
     );
-  };
+  }, [fridgeNamesLower, fridgeTokenIndex]);
+
+  const hasOwnedIngredient = useCallback((ingredient: string) => ingredientMatchesFridge(ingredient), [ingredientMatchesFridge]);
 
   const missingEssentialItems = useMemo(() => {
     return essentialItems.filter(
@@ -527,16 +674,9 @@ export default function HomePage() {
   }, [fridgeFilterCategory, fridgeFilterStatus, fridgeSearch, sortedFridgeItems]);
 
   const recipeCards = useMemo(() => {
-    const fridgeNames = fridgeItems.map((item) => item.name);
-
     return RECIPES.map((recipe) => {
-      const hasMain = recipe.mainIngredients.filter((ingredient) =>
-        fridgeNames.some((fridgeName) => ingredient.includes(fridgeName) || fridgeName.includes(ingredient)),
-      );
-
-      const missingMain = recipe.mainIngredients.filter(
-        (ingredient) => !fridgeNames.some((fridgeName) => ingredient.includes(fridgeName) || fridgeName.includes(ingredient)),
-      );
+      const hasMain = recipe.mainIngredients.filter((ingredient) => ingredientMatchesFridge(ingredient));
+      const missingMain = recipe.mainIngredients.filter((ingredient) => !ingredientMatchesFridge(ingredient));
 
       const denominator = Math.max(recipe.mainIngredients.length, 1);
       const matchRate = Math.round((hasMain.length / denominator) * 100);
@@ -548,7 +688,7 @@ export default function HomePage() {
         matchRate,
       };
     }).sort((a, b) => b.matchRate - a.matchRate);
-  }, [fridgeItems]);
+  }, [ingredientMatchesFridge]);
 
   const visibleRecipeCards = useMemo(
     () =>
@@ -583,15 +723,16 @@ export default function HomePage() {
   );
 
   const addFridgeItem = (name: string, category: string, expiryDate: string) => {
-    const trimmed = name.trim();
+    const validation = validateIngredientName(name);
 
-    if (!trimmed) {
+    if (!validation.ok) {
+      setFridgeActionMessage(validation.reason);
       return;
     }
 
     const item: FridgeItem = {
       id: createUniqueId("fridge"),
-      name: trimmed,
+      name: validation.value,
       category,
       addedDate: toDateInputValue(new Date()),
       expiryDate,
@@ -601,7 +742,7 @@ export default function HomePage() {
     setFridgeSearch("");
     setFridgeFilterStatus("all");
     setFridgeFilterCategory("전체");
-    setFridgeActionMessage(`"${trimmed}" 재료를 추가했습니다.`);
+    setFridgeActionMessage(`"${validation.value}" 재료를 추가했습니다.`);
   };
 
   const toggleQuickItem = (item: QuickItem) => {
@@ -689,22 +830,23 @@ export default function HomePage() {
   };
 
   const addShoppingItem = (name: string, reason: string, recipeName?: string): boolean => {
-    const trimmed = name.trim();
+    const validation = validateIngredientName(name);
 
-    if (!trimmed) {
+    if (!validation.ok) {
+      setDataOpsMessage(validation.reason);
       return false;
     }
 
     let added = false;
 
     setShoppingList((prev) => {
-      if (prev.some((item) => item.name.toLowerCase() === trimmed.toLowerCase())) {
+      if (prev.some((item) => item.name.toLowerCase() === validation.value.toLowerCase())) {
         return prev;
       }
 
       const nextItem: ShoppingItem = {
         id: createUniqueId("shopping"),
-        name: trimmed,
+        name: validation.value,
         reason,
         recipeName,
         checked: false,
@@ -776,13 +918,14 @@ export default function HomePage() {
   };
 
   const addEssentialItem = () => {
-    const trimmed = newEssentialName.trim();
+    const validation = validateIngredientName(newEssentialName);
 
-    if (!trimmed) {
+    if (!validation.ok) {
+      setDataOpsMessage(validation.reason);
       return;
     }
 
-    setEssentialItems((prev) => (prev.includes(trimmed) ? prev : [...prev, trimmed]));
+    setEssentialItems((prev) => (prev.includes(validation.value) ? prev : [...prev, validation.value]));
     setNewEssentialName("");
   };
 
@@ -806,7 +949,8 @@ export default function HomePage() {
     try {
       await navigator.clipboard.writeText(serialized);
       setDataOpsMessage("데이터 백업 JSON을 클립보드에 복사했습니다.");
-    } catch {
+    } catch (error) {
+      reportError("exportAppData.clipboardWrite", error);
       setDataOpsMessage("데이터 백업 JSON을 아래 텍스트 영역에 준비했습니다.");
     }
   };
@@ -848,7 +992,8 @@ export default function HomePage() {
       }
 
       setDataOpsMessage("데이터를 성공적으로 가져왔습니다.");
-    } catch {
+    } catch (error) {
+      reportError("importAppData", error);
       setDataOpsMessage("JSON 형식을 확인해 주세요. 데이터 가져오기에 실패했습니다.");
     }
   };
@@ -932,911 +1077,129 @@ export default function HomePage() {
     setTab("home");
   };
 
-  const renderHome = () => {
-    const urgentItems = fridgeItems.filter((item) => {
-      const diff = getDaysDiff(item.expiryDate);
-      return diff >= 0 && diff <= 3;
-    });
-
-    const expiredItems = fridgeItems.filter((item) => getDaysDiff(item.expiryDate) < 0);
-
-    return (
-      <div className="space-y-6 p-4 pb-24">
-        <header className="mb-6 flex items-center justify-between">
-          <div>
-            <h1 className="text-[44px] font-extrabold tracking-tight text-slate-900">우리집 냉장고</h1>
-            <p className="mt-1 text-2xl text-slate-500">냉장고 파먹기를 시작해볼까요?</p>
-          </div>
-          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-orange-100 text-3xl">🍳</div>
-        </header>
-
-        {notices.length > 0 ? (
-          <div className="space-y-2">
-            {notices.map((notice) => (
-              <div
-                key={notice.id}
-                className={`flex items-center justify-between rounded-2xl border p-3 text-base ${toneClass(notice.tone)}`}
-              >
-                <div className="flex items-center gap-2">
-                  <span aria-hidden="true">ℹ️</span>
-                  <span>{notice.message}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => dismissNotice(notice.id)}
-                  className="opacity-60 transition hover:opacity-100"
-                  aria-label="알림 닫기"
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        <section className="rounded-[28px] bg-gradient-to-br from-orange-400 to-orange-500 p-5 text-white shadow-md">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-4xl font-bold">냉장고 속 재료</h2>
-              <p className="mt-1 text-xl text-orange-100">총 {fridgeItems.length}개의 재료가 있어요</p>
-            </div>
-            <span className="text-4xl">🧊</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setTab("fridge")}
-            className="mt-4 w-full rounded-full bg-white px-4 py-2 text-xl font-semibold text-orange-600"
-          >
-            냉장고 관리하기
-          </button>
-        </section>
-
-        <section className="grid grid-cols-2 gap-4">
-          <button
-            type="button"
-            onClick={() => setTab("recommend")}
-            className="rounded-3xl border border-slate-100 bg-white p-5 shadow-sm"
-          >
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-yellow-100 text-3xl">✨</div>
-            <p className="mt-2 text-4xl font-bold text-slate-800">메뉴 추천</p>
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("shopping")}
-            className="rounded-3xl border border-slate-100 bg-white p-5 shadow-sm"
-          >
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-3xl">🛒</div>
-            <p className="mt-2 text-4xl font-bold text-slate-800">장보기 목록</p>
-          </button>
-        </section>
-
-        {missingEssentialItems.length > 0 ? (
-          <section className="rounded-2xl border border-sky-100 bg-sky-50 p-4">
-            <h3 className="text-lg font-bold text-sky-700">부족한 필수 재료를 한 번에 추가할까요?</h3>
-            <p className="mt-1 text-sm text-sky-600">{missingEssentialItems.join(", ")}</p>
-            <button
-              type="button"
-              onClick={addMissingEssentialToShopping}
-              className="mt-3 rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white"
-            >
-              장보기에 한 번에 담기
-            </button>
-          </section>
-        ) : null}
-
-        {urgentItems.length > 0 || expiredItems.length > 0 ? (
-          <section>
-            <h3 className="mb-3 flex items-center gap-2 text-xl font-bold text-slate-800">
-              <span aria-hidden="true">⚡</span>
-              유통기한 임박!
-            </h3>
-            <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm">
-              {[...expiredItems, ...urgentItems].slice(0, 3).map((item) => {
-                const diff = getDaysDiff(item.expiryDate);
-                const badgeClass = diff < 0 ? "bg-red-100 text-red-600" : "bg-orange-100 text-orange-600";
-
-                return (
-                  <div key={item.id} className="flex items-center justify-between border-b border-slate-50 p-3 last:border-b-0">
-                    <span className="font-semibold text-slate-700">{item.name}</span>
-                    <span className={`rounded-full px-2 py-1 text-sm font-bold ${badgeClass}`}>
-                      {diff < 0 ? `D+${Math.abs(diff)}` : `D-${diff}`}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        ) : null}
-      </div>
-    );
-  };
-
-  const renderFridge = () => (
-    <div className="space-y-4 p-4 pb-24">
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-5xl font-extrabold tracking-tight text-slate-900">내 냉장고 관리</h2>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => setShowQuickAdd(true)}
-            className="flex h-12 w-12 items-center justify-center rounded-full bg-yellow-400 text-xl text-white"
-            aria-label="빠른 등록"
-          >
-            ⚡
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowManualAdd((prev) => !prev)}
-            className="flex h-12 w-12 items-center justify-center rounded-full bg-orange-500 text-2xl text-white"
-            aria-label="직접 등록"
-          >
-            +
-          </button>
-        </div>
-      </div>
-
-      {showManualAdd ? (
-        <div className="flex gap-2 rounded-2xl border border-slate-100 bg-white p-3 shadow-sm">
-          <input
-            value={manualName}
-            onChange={(event) => setManualName(event.target.value)}
-            placeholder="재료명"
-            className="flex-1 rounded-xl bg-slate-50 px-3 py-2 text-sm outline-none ring-orange-300 focus:ring"
-          />
-          <input
-            type="date"
-            value={manualExpiryDate}
-            onChange={(event) => setManualExpiryDate(event.target.value)}
-            className="w-44 rounded-xl bg-slate-50 px-3 py-2 text-center text-sm outline-none ring-orange-300 focus:ring"
-            aria-label="유통기한 날짜"
-          />
-          <button
-            type="button"
-            onClick={addManualItem}
-            disabled={!manualName.trim() || !manualExpiryDate}
-            className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-          >
-            추가
-          </button>
-        </div>
-      ) : null}
-
-      <div className="space-y-3 rounded-2xl border border-slate-100 bg-white p-3 shadow-sm">
-        <input
-          value={fridgeSearch}
-          onChange={(event) => setFridgeSearch(event.target.value)}
-          placeholder="재료 검색"
-          className="w-full rounded-xl bg-slate-50 px-3 py-2 text-sm outline-none ring-orange-300 focus:ring"
-        />
-
-        <div className="flex flex-wrap gap-2">
-          {([
-            ["all", "전체"],
-            ["urgent", "임박"],
-            ["expired", "만료"],
-            ["safe", "여유"],
-          ] as const).map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setFridgeFilterStatus(key)}
-              className={`rounded-full px-3 py-1.5 text-xs font-semibold ${fridgeFilterStatus === key ? "bg-orange-500 text-white" : "bg-slate-100 text-slate-600"}`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          {fridgeCategories.map((category) => (
-            <button
-              key={category}
-              type="button"
-              onClick={() => setFridgeFilterCategory(category)}
-              className={`rounded-full px-3 py-1.5 text-xs font-semibold ${fridgeFilterCategory === category ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600"}`}
-            >
-              {category}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {fridgeActionMessage ? (
-        <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-          {fridgeActionMessage}
-        </p>
-      ) : null}
-
-      {filteredFridgeItems.length === 0 ? (
-        <div className="py-12 text-center text-slate-400">
-          <div className="text-6xl">🧊</div>
-          <p className="mt-2 text-xl">
-            {fridgeItems.length === 0 ? "냉장고가 비어 있어요." : "조건에 맞는 재료가 없어요."}
-            <br />
-            {fridgeItems.length === 0 ? "재료를 먼저 등록해 주세요." : "검색어/필터를 바꿔서 다시 확인해 주세요."}
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {filteredFridgeItems.map((item) => {
-            const diff = getDaysDiff(item.expiryDate);
-            const badgeClass = diff < 0
-              ? "bg-red-100 text-red-600"
-              : diff <= 3
-                ? "bg-orange-100 text-orange-600"
-                : "bg-slate-100 text-slate-600";
-
-            return (
-              <div key={item.id} className="flex items-center justify-between rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
-                <div>
-                  <h4 className="text-4xl font-extrabold text-slate-900">{item.name}</h4>
-                  <p className="mt-1 text-base text-slate-400">등록: {item.addedDate}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => openExpiryEditor(item)}
-                    className={`rounded-full px-3 py-1 text-xl font-bold ${badgeClass}`}
-                  >
-                    {diff < 0 ? `D+${Math.abs(diff)}` : `D-${diff}`}
-                  </button>
-                  <a
-                    href={getCoupangLink(item.name)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="rounded-full bg-blue-50 p-1.5 text-2xl text-blue-500"
-                    aria-label={`${item.name} 쿠팡 링크`}
-                  >
-                    🛒
-                  </a>
-                  <button
-                    type="button"
-                    onClick={() => removeFridgeItem(item.id)}
-                    className="rounded-full bg-red-50 p-1.5 text-2xl text-red-400"
-                    aria-label="삭제"
-                  >
-                    🗑️
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {editingExpiryTarget ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40">
-          <div className="w-full max-w-[430px] rounded-t-3xl bg-white p-5">
-            <h3 className="text-xl font-bold text-slate-900">유통기한 수정</h3>
-            <p className="mt-1 text-sm text-slate-500">{editingExpiryTarget.name}의 디데이를 변경합니다.</p>
-
-            <input
-              type="date"
-              value={editingExpiryDate}
-              onChange={(event) => setEditingExpiryDate(event.target.value)}
-              className="mt-4 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-center text-sm outline-none ring-orange-300 focus:ring"
-              aria-label="유통기한 수정"
-            />
-
-            <div className="mt-4 flex gap-2">
-              <button
-                type="button"
-                onClick={() => setEditingExpiryTarget(null)}
-                className="flex-1 rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-600"
-              >
-                취소
-              </button>
-              <button
-                type="button"
-                onClick={saveExpiryDate}
-                className="flex-1 rounded-xl bg-orange-500 px-4 py-3 text-sm font-semibold text-white"
-              >
-                저장
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {showQuickAdd ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50">
-          <div className="flex h-[75%] w-full max-w-[430px] flex-col rounded-t-3xl bg-white p-5">
-            <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-xl font-bold text-slate-900">빠른 재료 등록</h3>
-              <button type="button" onClick={() => setShowQuickAdd(false)} className="text-2xl text-slate-500" aria-label="닫기">
-                ✕
-              </button>
-            </div>
-
-            <div className="flex-1 space-y-6 overflow-y-auto pb-10">
-              {configuredQuickItems.length === 0 ? (
-                <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm text-slate-500">
-                  설정에서 빠른 재료 항목을 선택해 주세요.
-                </div>
-              ) : null}
-
-              {configuredQuickItems.map((category) => (
-                <section key={category.title}>
-                  <h4 className="mb-2 text-sm font-semibold text-slate-500">{category.title}</h4>
-                  <div className="flex flex-wrap gap-2">
-                    {category.items.map((item) => {
-                      const isSelected = quickSelectedNames.has(item.name.toLowerCase());
-
-                      return (
-                        <button
-                          key={item.name}
-                          type="button"
-                          onClick={() => toggleQuickItem(item)}
-                          className={`rounded-full px-3 py-1.5 text-sm font-semibold transition ${isSelected ? "bg-orange-100 text-orange-700 ring-1 ring-orange-300" : "bg-slate-100 text-slate-700 hover:bg-orange-100 hover:text-orange-600"}`}
-                        >
-                          {isSelected ? "✓ " : "+ "}
-                          {item.name}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </section>
-              ))}
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setShowQuickAdd(false)}
-              className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white"
-            >
-              완료
-            </button>
-          </div>
-        </div>
-      ) : null}
-    </div>
+  const renderHome = () => (
+    <HomeTab
+      fridgeItems={fridgeItems}
+      notices={notices}
+      missingEssentialItems={missingEssentialItems}
+      onDismissNotice={dismissNotice}
+      onGoFridge={() => setTab("fridge")}
+      onGoRecommend={() => setTab("recommend")}
+      onGoShopping={() => setTab("shopping")}
+      onAddMissingEssentialToShopping={addMissingEssentialToShopping}
+      getDaysDiff={getDaysDiff}
+      toneClass={toneClass}
+    />
   );
 
-  const renderRecommend = () => {
-    if (selectedRecipe) {
-      return (
-        <div className="space-y-4 p-4 pb-24">
-          <button
-            type="button"
-            onClick={() => setSelectedRecipeId(null)}
-            className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-700"
-          >
-            ← 추천 목록으로
-          </button>
+  const renderFridge = () => (
+    <FridgeTab
+      model={{
+        showQuickAdd,
+        setShowQuickAdd,
+        showManualAdd,
+        setShowManualAdd,
+        manualName,
+        setManualName,
+        manualExpiryDate,
+        setManualExpiryDate,
+        addManualItem,
+        fridgeSearch,
+        setFridgeSearch,
+        fridgeFilterStatus,
+        setFridgeFilterStatus,
+        fridgeCategories,
+        fridgeFilterCategory,
+        setFridgeFilterCategory,
+        fridgeActionMessage,
+        filteredFridgeItems,
+        fridgeItems,
+        getDaysDiff,
+        openExpiryEditor,
+        getCoupangLink,
+        removeFridgeItem,
+        editingExpiryTarget,
+        editingExpiryDate,
+        setEditingExpiryDate,
+        setEditingExpiryTarget,
+        saveExpiryDate,
+        configuredQuickItems,
+        quickSelectedNames,
+        toggleQuickItem,
+      }}
+    />
+  );
 
-          {recommendActionMessage ? (
-            <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-              {recommendActionMessage}
-            </p>
-          ) : null}
-
-          <article className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
-            <div className="mb-4 flex items-start gap-4">
-              <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-orange-50 text-5xl">{selectedRecipe.image}</div>
-              <div className="flex-1">
-                <h3 className="text-3xl font-extrabold text-slate-900">{selectedRecipe.name}</h3>
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-slate-500">
-                  <span>⏱ {selectedRecipe.time}</span>
-                  <span>⭐ {selectedRecipe.difficulty}</span>
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${selectedRecipe.category === "baby" ? "bg-sky-100 text-sky-700" : "bg-orange-100 text-orange-700"}`}>
-                    {selectedRecipe.category === "baby" ? "영유아" : "일반요리"}
-                  </span>
-                  <span className="rounded-full bg-rose-50 px-3 py-1 text-xs font-bold text-rose-600">일치율 {selectedRecipe.matchRate}%</span>
-                </div>
-              </div>
-            </div>
-
-            {selectedRecipe.missingMain.length > 0 ? (
-              <div className="mb-4 rounded-xl border border-rose-100 bg-rose-50 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm font-semibold text-rose-500">부족: {selectedRecipe.missingMain.join(", ")}</p>
-                  <button
-                    type="button"
-                    onClick={() => addMissingToShopping(selectedRecipe.missingMain, selectedRecipe.name)}
-                    className="rounded-full bg-orange-500 px-4 py-2 text-sm font-semibold text-white"
-                  >
-                    장보기
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <p className="mb-4 rounded-xl bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">지금 바로 만들 수 있어요 🎉</p>
-            )}
-
-            <div className="mb-4 space-y-2 rounded-lg bg-slate-50 p-3">
-              <p className="text-xs font-semibold text-slate-500">레시피 재료</p>
-              <div className="flex flex-wrap gap-2">
-                {Array.from(new Set([...selectedRecipe.mainIngredients, ...selectedRecipe.subIngredients])).map((ingredient) => {
-                  const owned = hasOwnedIngredient(ingredient);
-
-                  return (
-                    <span
-                      key={`${selectedRecipe.id}-${ingredient}`}
-                      className={`rounded-full px-2 py-1 text-xs font-semibold ${owned ? "bg-red-50 text-red-600" : "bg-slate-100 text-slate-600"}`}
-                    >
-                      {ingredient}
-                    </span>
-                  );
-                })}
-              </div>
-              <p className="text-[11px] text-slate-400">빨간 글씨 = 내 냉장고에 있는 재료</p>
-            </div>
-
-            <p className="text-xs font-semibold text-slate-500">
-              조리 진행도: {getCheckedStepCount(selectedRecipe.id)} / {selectedRecipe.steps.length}
-            </p>
-            <ol className="mt-2 space-y-2 text-sm text-slate-700">
-              {selectedRecipe.steps.map((step, index) => {
-                const checked = (recipeStepChecked[selectedRecipe.id] ?? []).includes(index);
-
-                return (
-                  <li key={`${selectedRecipe.id}-step-${index}`}>
-                    <button
-                      type="button"
-                      onClick={() => toggleRecipeStep(selectedRecipe.id, index)}
-                      className="flex w-full items-start gap-2 rounded-lg px-2 py-1 text-left hover:bg-slate-50"
-                    >
-                      <span className="pt-0.5 text-base" aria-hidden="true">{checked ? "✅" : "⬜️"}</span>
-                      <span className={checked ? "text-slate-400 line-through" : "text-slate-700"}>
-                        <span className="mr-1 font-semibold text-slate-500">{index + 1}.</span>
-                        {step}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ol>
-
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <a
-                href={selectedRecipe.sourceUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-full bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-600"
-              >
-                원문 레시피
-              </a>
-              <span className="text-xs text-slate-400">출처: {selectedRecipe.source}</span>
-            </div>
-          </article>
-        </div>
-      );
-    }
-
-    return (
-      <div className="space-y-4 p-4 pb-24">
-        <h2 className="text-[52px] font-extrabold tracking-tight text-slate-900">오늘 뭐 해먹지?</h2>
-        <p className="text-2xl text-slate-500">내 냉장고 재료를 바탕으로 한 추천 메뉴입니다.</p>
-
-        <div className="flex flex-wrap gap-2">
-          {([
-            ["all", "전체"],
-            ["general", "일반요리"],
-            ["baby", "영유아"],
-          ] as const).map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setRecipeCategoryFilter(key)}
-              className={`rounded-full px-4 py-2 text-sm font-semibold ${recipeCategoryFilter === key ? "bg-slate-900 text-white" : "bg-white text-slate-600"}`}
-            >
-              {label}
-            </button>
-          ))}
-
-          <button
-            type="button"
-            onClick={() => setRecommendOnlyReady((prev) => !prev)}
-            className={`rounded-full px-4 py-2 text-sm font-semibold ${recommendOnlyReady ? "bg-emerald-500 text-white" : "bg-white text-slate-600"}`}
-          >
-            {recommendOnlyReady ? "✅ 지금 바로 가능한 메뉴만" : "전체 메뉴 보기"}
-          </button>
-        </div>
-
-        <p className="text-sm text-slate-400">총 {visibleRecipeCards.length}개 레시피를 표시 중입니다.</p>
-
-        {recommendActionMessage ? (
-          <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-            {recommendActionMessage}
-          </p>
-        ) : null}
-
-        {visibleRecipeCards.length === 0 ? (
-          <div className="rounded-2xl border border-slate-100 bg-white px-4 py-6 text-center text-slate-500">
-            조건에 맞는 메뉴가 아직 없어요.
-          </div>
-        ) : null}
-
-        {visibleRecipeCards.map((recipe) => (
-          <article
-            key={recipe.id}
-            role="button"
-            tabIndex={0}
-            onClick={() => toggleRecipeCard(recipe.id)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                toggleRecipeCard(recipe.id);
-              }
-            }}
-            className="cursor-pointer rounded-3xl border border-slate-100 bg-white p-4 shadow-sm"
-          >
-            <div className="flex gap-4">
-              <div className="flex h-24 w-24 items-center justify-center rounded-2xl bg-orange-50 text-5xl">{recipe.image}</div>
-              <div className="flex-1">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <h3 className="text-3xl font-extrabold text-slate-900">{recipe.name}</h3>
-                  <span className="rounded-full bg-rose-50 px-3 py-1 text-sm font-bold text-rose-600">일치율 {recipe.matchRate}%</span>
-                </div>
-
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-slate-500">
-                  <span>⏱ {recipe.time}</span>
-                  <span>⭐ {recipe.difficulty}</span>
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${recipe.category === "baby" ? "bg-sky-100 text-sky-700" : "bg-orange-100 text-orange-700"}`}>
-                    {recipe.category === "baby" ? "영유아" : "일반요리"}
-                  </span>
-                </div>
-
-                {recipe.missingMain.length > 0 ? (
-                  <div className="mt-3 border-t border-slate-100 pt-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm text-rose-400">부족: {recipe.missingMain.join(", ")}</p>
-                      <button
-                        type="button"
-                        onTouchStart={(event) => event.stopPropagation()}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          addMissingToShopping(recipe.missingMain, recipe.name);
-                        }}
-                        className="rounded-full bg-orange-500 px-4 py-2 text-sm font-semibold text-white"
-                      >
-                        장보기
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">지금 바로 만들 수 있어요 🎉</p>
-                )}
-
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <span className="rounded-full bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white">
-                    카드 누르면 조리법 화면으로 이동
-                  </span>
-                  <a
-                    href={recipe.sourceUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    onTouchStart={(event) => event.stopPropagation()}
-                    onClick={(event) => event.stopPropagation()}
-                    className="rounded-full bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-600"
-                  >
-                    원문 레시피
-                  </a>
-                  <span className="text-xs text-slate-400">출처: {recipe.source}</span>
-                </div>
-              </div>
-            </div>
-          </article>
-        ))}
-      </div>
-    );
-  };
+  const renderRecommend = () => (
+    <RecommendTab
+      model={{
+        selectedRecipe,
+        setSelectedRecipeId,
+        recommendActionMessage,
+        addMissingToShopping,
+        hasOwnedIngredient,
+        getCheckedStepCount,
+        recipeStepChecked,
+        toggleRecipeStep,
+        recipeCategoryFilter,
+        setRecipeCategoryFilter,
+        recommendOnlyReady,
+        setRecommendOnlyReady,
+        visibleRecipeCards,
+        toggleRecipeCard,
+      }}
+    />
+  );
 
   const renderShopping = () => (
-    <div className="space-y-4 p-4 pb-24">
-      <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-5xl font-extrabold text-slate-900">장보기 목록</h2>
-        <div className="flex items-center gap-2">
-          {checkedShopping.length > 0 ? (
-            <>
-              <button type="button" onClick={moveCheckedShoppingToFridge} className="text-sm text-blue-500">
-                냉장고로 이동
-              </button>
-              <button type="button" onClick={removeCheckedShopping} className="text-sm text-slate-500">
-                완료항목 비우기
-              </button>
-            </>
-          ) : null}
-        </div>
-      </div>
-
-      <input
-        value={shoppingSearch}
-        onChange={(event) => setShoppingSearch(event.target.value)}
-        placeholder="장보기 항목 검색"
-        className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-orange-400"
-      />
-
-      <div className="flex gap-2">
-        <input
-          value={newShoppingName}
-          onChange={(event) => setNewShoppingName(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              addShoppingItem(newShoppingName, "직접 추가");
-              setNewShoppingName("");
-            }
-          }}
-          placeholder="장볼 항목 추가"
-          className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-orange-400"
-        />
-        <button
-          type="button"
-          onClick={() => {
-            addShoppingItem(newShoppingName, "직접 추가");
-            setNewShoppingName("");
-          }}
-          className="rounded-xl bg-orange-500 px-4 text-white"
-          aria-label="추가"
-        >
-          +
-        </button>
-      </div>
-
-      {visibleUncheckedShopping.length > 0 ? (
-        <section className="space-y-2">
-          <p className="text-sm font-semibold text-slate-500">사야 할 것 ({visibleUncheckedShopping.length})</p>
-          {visibleUncheckedShopping.map((item) => (
-            <div key={item.id} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-white p-3 shadow-sm">
-              <button
-                type="button"
-                onClick={() => toggleShoppingCheck(item.id)}
-                className="h-6 w-6 shrink-0 rounded-full border-2 border-slate-300"
-                aria-label="체크"
-              />
-              <div className="min-w-0 flex-1">
-                <p className="truncate font-semibold text-slate-800">{item.name}</p>
-                <p className="truncate text-xs text-slate-400">
-                  {item.reason}
-                  {item.recipeName ? ` (${item.recipeName})` : ""}
-                </p>
-              </div>
-              <div className="flex items-center gap-1">
-                <a
-                  href={getCoupangLink(item.name)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="rounded-lg bg-blue-50 px-2.5 py-2 text-xs font-bold text-blue-600"
-                >
-                  쿠팡
-                </a>
-                <button type="button" onClick={() => removeShoppingItem(item.id)} className="p-2 text-slate-400" aria-label="삭제">
-                  ✕
-                </button>
-              </div>
-            </div>
-          ))}
-        </section>
-      ) : null}
-
-      {visibleCheckedShopping.length > 0 ? (
-        <section className="space-y-2 opacity-70">
-          <p className="text-sm font-semibold text-slate-500">완료됨</p>
-          {visibleCheckedShopping.map((item) => (
-            <div key={item.id} className="flex items-center gap-3 rounded-xl bg-slate-100 p-3">
-              <button type="button" onClick={() => toggleShoppingCheck(item.id)} className="h-6 w-6 rounded-full bg-emerald-500 text-white">
-                ✓
-              </button>
-              <p className="line-through">{item.name}</p>
-            </div>
-          ))}
-        </section>
-      ) : null}
-
-      {shoppingList.length === 0 ? (
-        <div className="py-12 text-center text-slate-400">
-          <div className="text-6xl">🛒</div>
-          <p className="mt-2 text-xl">
-            장보기 목록이 비어 있어요.
-            <br />
-            필요한 재료를 추가해 주세요.
-          </p>
-        </div>
-      ) : visibleUncheckedShopping.length === 0 && visibleCheckedShopping.length === 0 ? (
-        <div className="py-12 text-center text-slate-400">
-          <div className="text-6xl">🔎</div>
-          <p className="mt-2 text-xl">검색 조건에 맞는 장보기 항목이 없어요.</p>
-        </div>
-      ) : null}
-    </div>
+    <ShoppingTab
+      model={{
+        checkedShopping,
+        moveCheckedShoppingToFridge,
+        removeCheckedShopping,
+        shoppingSearch,
+        setShoppingSearch,
+        newShoppingName,
+        setNewShoppingName,
+        addShoppingItem,
+        visibleUncheckedShopping,
+        visibleCheckedShopping,
+        toggleShoppingCheck,
+        getCoupangLink,
+        removeShoppingItem,
+        shoppingList,
+      }}
+    />
   );
 
   const renderSettings = () => (
-    <div className="space-y-8 p-4 pb-24">
-      <h2 className="text-5xl font-extrabold text-slate-900">설정</h2>
-
-      <section className="space-y-3">
-        <h3 className="flex items-center gap-2 text-3xl font-bold text-slate-700">
-          <span aria-hidden="true">⚖️</span>
-          레시피 계량 단위
-        </h3>
-        <p className="text-xl text-slate-500">집에 계량컵/저울이 있으면 ml/g 모드, 없으면 간편 모드를 선택하세요.</p>
-
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            onClick={() => setMeasureMode("simple")}
-            className={`rounded-2xl border-2 p-4 ${measureMode === "simple" ? "border-orange-500 bg-orange-50 text-orange-700" : "border-slate-100 bg-white text-slate-600"}`}
-          >
-            <div className="text-3xl">🥄</div>
-            <p className="mt-1 text-2xl font-bold">간편 (숟가락)</p>
-          </button>
-          <button
-            type="button"
-            onClick={() => setMeasureMode("precise")}
-            className={`rounded-2xl border-2 p-4 ${measureMode === "precise" ? "border-blue-500 bg-blue-50 text-blue-700" : "border-slate-100 bg-white text-slate-600"}`}
-          >
-            <div className="text-3xl">⚖️</div>
-            <p className="mt-1 text-2xl font-bold">정밀 (ml/g)</p>
-          </button>
-        </div>
-
-        <button type="button" onClick={() => setShowGuide((prev) => !prev)} className="w-full rounded-xl bg-orange-50 py-2 text-base font-semibold text-orange-600">
-          📖 계량법 가이드 보기
-        </button>
-
-        {showGuide ? (
-          <div className="space-y-2 rounded-2xl border border-slate-100 bg-white p-4">
-            {MEASURE_GUIDE.map((guide) => (
-              <div key={guide.title} className="flex items-center gap-3 rounded-xl bg-slate-50 p-3">
-                <span className="text-2xl">{guide.icon}</span>
-                <div>
-                  <p className="text-sm font-semibold text-slate-800">{guide.title}</p>
-                  <p className="text-xs text-slate-500">{guide.value}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </section>
-
-      <hr className="border-slate-100" />
-
-      <section className="space-y-3">
-        <h3 className="flex items-center gap-2 text-3xl font-bold text-slate-700">
-          <span aria-hidden="true">⚡</span>
-          빠른 재료 등록 항목
-        </h3>
-        <p className="text-xl text-slate-500">냉장고 화면의 빠른 등록에서 보여줄 재료를 직접 선택하세요.</p>
-
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setQuickAddEnabledItems(QUICK_ITEM_NAME_LIST)}
-            className="rounded-full bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white"
-          >
-            전체 선택
-          </button>
-          <button
-            type="button"
-            onClick={() => setQuickAddEnabledItems([])}
-            className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600"
-          >
-            전체 해제
-          </button>
-          <span className="rounded-full bg-orange-50 px-3 py-1.5 text-xs font-semibold text-orange-600">
-            선택됨 {quickAddEnabledItems.length}개
-          </span>
-        </div>
-
-        <div className="space-y-3 rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
-          {QUICK_ITEMS.map((group) => (
-            <div key={group.title}>
-              <p className="mb-2 text-sm font-semibold text-slate-500">{group.title}</p>
-              <div className="flex flex-wrap gap-2">
-                {group.items.map((item) => {
-                  const enabled = quickAddEnabledNameSet.has(item.name);
-
-                  return (
-                    <button
-                      key={`setting-${item.name}`}
-                      type="button"
-                      onClick={() => toggleQuickAddOption(item.name)}
-                      className={`rounded-full px-3 py-1.5 text-sm font-semibold transition ${enabled ? "bg-orange-100 text-orange-700 ring-1 ring-orange-300" : "bg-slate-100 text-slate-600"}`}
-                    >
-                      {enabled ? "✓ " : "+ "}
-                      {item.name}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <hr className="border-slate-100" />
-
-      <section className="space-y-3">
-        <h3 className="flex items-center gap-2 text-3xl font-bold text-slate-700">
-          <span aria-hidden="true">🔔</span>
-          유통기한 푸시 알림
-        </h3>
-
-        <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
-          <div>
-            <p className="text-2xl font-semibold text-slate-800">알림 수신</p>
-            <p className="mt-1 text-xl text-slate-500">유통기한 3일 전부터 알려드려요</p>
-          </div>
-          <button
-            type="button"
-            onClick={toggleNotification}
-            className={`relative h-6 w-12 rounded-full ${notifEnabled ? "bg-orange-500" : "bg-slate-300"}`}
-            aria-label="알림 토글"
-          >
-            <span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition-transform ${notifEnabled ? "translate-x-7" : "translate-x-1"}`} />
-          </button>
-        </div>
-      </section>
-
-      <hr className="border-slate-100" />
-
-      <section className="space-y-3">
-        <h3 className="text-3xl font-bold text-slate-700">📌 항상 있어야 하는 필수 재료</h3>
-        <p className="text-xl text-slate-500">재료가 소진되면 홈 화면에서 바로 알려드려요.</p>
-
-        <div className="flex gap-2">
-          <input
-            value={newEssentialName}
-            onChange={(event) => setNewEssentialName(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                addEssentialItem();
-              }
-            }}
-            placeholder="예: 양파, 우유"
-            className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-orange-400"
-          />
-          <button type="button" onClick={addEssentialItem} className="rounded-xl bg-slate-900 px-4 text-sm font-bold text-white">
-            추가
-          </button>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          {essentialItems.map((name) => (
-            <span key={name} className="flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-sm text-slate-700">
-              {name}
-              <button type="button" onClick={() => removeEssentialItem(name)} className="text-slate-400" aria-label={`${name} 삭제`}>
-                ✕
-              </button>
-            </span>
-          ))}
-        </div>
-      </section>
-
-      <hr className="border-slate-100" />
-
-      <section className="space-y-3">
-        <h3 className="text-3xl font-bold text-slate-700">💾 데이터 백업/복원</h3>
-        <p className="text-xl text-slate-500">앱 데이터를 JSON으로 저장하거나 다시 불러올 수 있어요.</p>
-
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={exportAppData}
-            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
-          >
-            백업 JSON 만들기
-          </button>
-          <button
-            type="button"
-            onClick={importAppData}
-            className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-white"
-          >
-            JSON 가져오기
-          </button>
-        </div>
-
-        <textarea
-          value={importPayload}
-          onChange={(event) => setImportPayload(event.target.value)}
-          placeholder="여기에 백업 JSON을 붙여넣어 주세요"
-          className="h-32 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-orange-400"
-        />
-
-        {dataOpsMessage ? <p className="text-sm text-slate-500">{dataOpsMessage}</p> : null}
-      </section>
-    </div>
+    <SettingsTab
+      model={{
+        measureMode,
+        setMeasureMode,
+        showGuide,
+        setShowGuide,
+        measureGuide: MEASURE_GUIDE,
+        quickItemGroups: QUICK_ITEMS,
+        quickAddEnabledItems,
+        setQuickAddEnabledItems,
+        quickAddEnabledNameSet,
+        toggleQuickAddOption,
+        toggleNotification,
+        notifEnabled,
+        newEssentialName,
+        setNewEssentialName,
+        addEssentialItem,
+        essentialItems,
+        removeEssentialItem,
+        exportAppData,
+        importAppData,
+        importPayload,
+        setImportPayload,
+        dataOpsMessage,
+        allQuickItemNames: QUICK_ITEM_NAME_LIST,
+      }}
+    />
   );
 
   const renderTab = () => {

@@ -1,0 +1,144 @@
+import type { FridgeItem, Notice, NoticeTone } from "@/components/tabs/types";
+
+type HomeTabProps = {
+  fridgeItems: Pick<FridgeItem, "id" | "name" | "expiryDate">[];
+  notices: Notice[];
+  missingEssentialItems: string[];
+  onDismissNotice: (noticeId: string) => void;
+  onGoFridge: () => void;
+  onGoRecommend: () => void;
+  onGoShopping: () => void;
+  onAddMissingEssentialToShopping: () => void;
+  getDaysDiff: (dateText: string) => number;
+  toneClass: (tone: NoticeTone) => string;
+};
+
+export function HomeTab({
+  fridgeItems,
+  notices,
+  missingEssentialItems,
+  onDismissNotice,
+  onGoFridge,
+  onGoRecommend,
+  onGoShopping,
+  onAddMissingEssentialToShopping,
+  getDaysDiff,
+  toneClass,
+}: HomeTabProps) {
+  const urgentItems = fridgeItems.filter((item) => {
+    const diff = getDaysDiff(item.expiryDate);
+    return diff >= 0 && diff <= 3;
+  });
+
+  const expiredItems = fridgeItems.filter((item) => getDaysDiff(item.expiryDate) < 0);
+
+  return (
+    <div className="space-y-6 p-4 pb-24">
+      <header className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-[44px] font-extrabold tracking-tight text-slate-900">우리집 냉장고</h1>
+          <p className="mt-1 text-2xl text-slate-500">냉장고 파먹기를 시작해볼까요?</p>
+        </div>
+        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-orange-100 text-3xl">🍳</div>
+      </header>
+
+      {notices.length > 0 ? (
+        <div className="space-y-2">
+          {notices.map((notice) => (
+            <div
+              key={notice.id}
+              className={`flex items-center justify-between rounded-2xl border p-3 text-base ${toneClass(notice.tone)}`}
+            >
+              <div className="flex items-center gap-2">
+                <span aria-hidden="true">ℹ️</span>
+                <span>{notice.message}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => onDismissNotice(notice.id)}
+                className="opacity-60 transition hover:opacity-100"
+                aria-label="알림 닫기"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      <section className="rounded-[28px] bg-gradient-to-br from-orange-400 to-orange-500 p-5 text-white shadow-md">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-4xl font-bold">냉장고 속 재료</h2>
+            <p className="mt-1 text-xl text-orange-100">총 {fridgeItems.length}개의 재료가 있어요</p>
+          </div>
+          <span className="text-4xl">🧊</span>
+        </div>
+        <button
+          type="button"
+          onClick={onGoFridge}
+          className="mt-4 w-full rounded-full bg-white px-4 py-2 text-xl font-semibold text-orange-600"
+        >
+          냉장고 관리하기
+        </button>
+      </section>
+
+      <section className="grid grid-cols-2 gap-4">
+        <button
+          type="button"
+          onClick={onGoRecommend}
+          className="rounded-3xl border border-slate-100 bg-white p-5 shadow-sm"
+        >
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-yellow-100 text-3xl">✨</div>
+          <p className="mt-2 text-4xl font-bold text-slate-800">메뉴 추천</p>
+        </button>
+        <button
+          type="button"
+          onClick={onGoShopping}
+          className="rounded-3xl border border-slate-100 bg-white p-5 shadow-sm"
+        >
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-3xl">🛒</div>
+          <p className="mt-2 text-4xl font-bold text-slate-800">장보기 목록</p>
+        </button>
+      </section>
+
+      {missingEssentialItems.length > 0 ? (
+        <section className="rounded-2xl border border-sky-100 bg-sky-50 p-4">
+          <h3 className="text-lg font-bold text-sky-700">부족한 필수 재료를 한 번에 추가할까요?</h3>
+          <p className="mt-1 text-sm text-sky-600">{missingEssentialItems.join(", ")}</p>
+          <button
+            type="button"
+            onClick={onAddMissingEssentialToShopping}
+            className="mt-3 rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white"
+          >
+            장보기에 한 번에 담기
+          </button>
+        </section>
+      ) : null}
+
+      {urgentItems.length > 0 || expiredItems.length > 0 ? (
+        <section>
+          <h3 className="mb-3 flex items-center gap-2 text-xl font-bold text-slate-800">
+            <span aria-hidden="true">⚡</span>
+            유통기한 임박!
+          </h3>
+          <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm">
+            {[...expiredItems, ...urgentItems].slice(0, 3).map((item) => {
+              const diff = getDaysDiff(item.expiryDate);
+              const badgeClass = diff < 0 ? "bg-red-100 text-red-600" : "bg-orange-100 text-orange-600";
+
+              return (
+                <div key={item.id} className="flex items-center justify-between border-b border-slate-50 p-3 last:border-b-0">
+                  <span className="font-semibold text-slate-700">{item.name}</span>
+                  <span className={`rounded-full px-2 py-1 text-sm font-bold ${badgeClass}`}>
+                    {diff < 0 ? `D+${Math.abs(diff)}` : `D-${diff}`}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
