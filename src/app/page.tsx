@@ -389,6 +389,11 @@ export default function HomePage() {
     [fridgeItems],
   );
 
+  const quickSelectedNames = useMemo(
+    () => new Set(fridgeItems.map((item) => item.name.trim().toLowerCase())),
+    [fridgeItems],
+  );
+
   const hasOwnedIngredient = (ingredient: string) => {
     const normalized = ingredient.toLowerCase();
 
@@ -1074,16 +1079,21 @@ export default function HomePage() {
                 <section key={category.title}>
                   <h4 className="mb-2 text-sm font-semibold text-slate-500">{category.title}</h4>
                   <div className="flex flex-wrap gap-2">
-                    {category.items.map((item) => (
-                      <button
-                        key={item.name}
-                        type="button"
-                        onClick={() => addQuickItem(item)}
-                        className="rounded-full bg-slate-100 px-3 py-1.5 text-sm transition hover:bg-orange-100 hover:text-orange-600"
-                      >
-                        + {item.name}
-                      </button>
-                    ))}
+                    {category.items.map((item) => {
+                      const isSelected = quickSelectedNames.has(item.name.toLowerCase());
+
+                      return (
+                        <button
+                          key={item.name}
+                          type="button"
+                          onClick={() => addQuickItem(item)}
+                          className={`rounded-full px-3 py-1.5 text-sm font-semibold transition ${isSelected ? "bg-orange-100 text-orange-700 ring-1 ring-orange-300" : "bg-slate-100 text-slate-700 hover:bg-orange-100 hover:text-orange-600"}`}
+                        >
+                          {isSelected ? "✓ " : "+ "}
+                          {item.name}
+                        </button>
+                      );
+                    })}
                   </div>
                 </section>
               ))}
