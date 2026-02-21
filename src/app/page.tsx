@@ -300,6 +300,7 @@ export default function HomePage() {
   const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(null);
   const [recipeStepChecked, setRecipeStepChecked] = useState<Record<string, number[]>>({});
   const [fridgeActionMessage, setFridgeActionMessage] = useState<string | null>(null);
+  const [recommendActionMessage, setRecommendActionMessage] = useState<string | null>(null);
   const [editingExpiryTarget, setEditingExpiryTarget] = useState<FridgeItem | null>(null);
   const [editingExpiryDate, setEditingExpiryDate] = useState(() => dateAfter(7));
   const [importPayload, setImportPayload] = useState("");
@@ -640,12 +641,14 @@ export default function HomePage() {
     setEditingExpiryTarget(null);
   };
 
-  const addShoppingItem = (name: string, reason: string, recipeName?: string) => {
+  const addShoppingItem = (name: string, reason: string, recipeName?: string): boolean => {
     const trimmed = name.trim();
 
     if (!trimmed) {
-      return;
+      return false;
     }
+
+    let added = false;
 
     setShoppingList((prev) => {
       if (prev.some((item) => item.name.toLowerCase() === trimmed.toLowerCase())) {
@@ -660,12 +663,28 @@ export default function HomePage() {
         checked: false,
       };
 
+      added = true;
       return [...prev, nextItem];
     });
+
+    return added;
   };
 
   const addMissingToShopping = (items: string[], recipeName: string) => {
-    items.forEach((itemName) => addShoppingItem(itemName, "레시피 부족 재료", recipeName));
+    let addedCount = 0;
+
+    items.forEach((itemName) => {
+      if (addShoppingItem(itemName, "레시피 부족 재료", recipeName)) {
+        addedCount += 1;
+      }
+    });
+
+    if (addedCount > 0) {
+      setRecommendActionMessage(`"${recipeName}" 부족 재료 ${addedCount}개를 장보기에 담았습니다.`);
+      return;
+    }
+
+    setRecommendActionMessage("이미 장보기 목록에 있는 재료입니다.");
   };
 
   const addMissingEssentialToShopping = () => {
@@ -1225,6 +1244,12 @@ export default function HomePage() {
             ← 추천 목록으로
           </button>
 
+          {recommendActionMessage ? (
+            <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+              {recommendActionMessage}
+            </p>
+          ) : null}
+
           <article className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
             <div className="mb-4 flex items-start gap-4">
               <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-orange-50 text-5xl">{selectedRecipe.image}</div>
@@ -1349,6 +1374,12 @@ export default function HomePage() {
         </div>
 
         <p className="text-sm text-slate-400">총 {visibleRecipeCards.length}개 레시피를 표시 중입니다.</p>
+
+        {recommendActionMessage ? (
+          <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+            {recommendActionMessage}
+          </p>
+        ) : null}
 
         {visibleRecipeCards.length === 0 ? (
           <div className="rounded-2xl border border-slate-100 bg-white px-4 py-6 text-center text-slate-500">
