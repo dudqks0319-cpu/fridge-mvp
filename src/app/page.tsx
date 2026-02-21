@@ -182,6 +182,28 @@ const QUICK_ITEM_NAME_LIST = Array.from(
   new Set(QUICK_ITEMS.flatMap((group) => group.items.map((item) => item.name))),
 );
 
+const INGREDIENT_IMAGE_PATH_BY_KEY: Record<string, string> = {
+  양파: "/ingredients/onion.jpg",
+  대파: "/ingredients/green-onion.jpg",
+  쪽파: "/ingredients/green-onion.jpg",
+  마늘: "/ingredients/garlic.jpg",
+  다진마늘: "/ingredients/garlic.jpg",
+  간마늘: "/ingredients/garlic.jpg",
+  당근: "/ingredients/carrot.jpg",
+  감자: "/ingredients/potato.jpg",
+  고구마: "/ingredients/sweet-potato.jpg",
+  양배추: "/ingredients/cabbage.jpg",
+  배추: "/ingredients/napa-cabbage.jpg",
+  알배추: "/ingredients/napa-cabbage.jpg",
+  상추: "/ingredients/lettuce.jpg",
+  깻잎: "/ingredients/perilla-leaf.jpg",
+  시금치: "/ingredients/spinach.jpg",
+  애호박: "/ingredients/zucchini.jpg",
+  주키니: "/ingredients/zucchini.jpg",
+  가지: "/ingredients/eggplant.jpg",
+  무: "/ingredients/radish.jpg",
+};
+
 const RECIPES: Recipe[] = RECIPE_CATALOG;
 
 const MEASURE_GUIDE = [
@@ -293,6 +315,14 @@ function reportError(scope: string, error: unknown): void {
 
 function normalizeIngredientName(raw: string): string {
   return raw.replace(/\s+/g, " ").trim();
+}
+
+function toIngredientLookupKey(raw: string): string {
+  return normalizeIngredientName(raw).toLowerCase().replace(/\s+/g, "");
+}
+
+function resolveIngredientImagePath(name: string): string | undefined {
+  return INGREDIENT_IMAGE_PATH_BY_KEY[toIngredientLookupKey(name)];
 }
 
 function validateIngredientName(raw: string): { ok: true; value: string } | { ok: false; reason: string } {
@@ -783,13 +813,15 @@ export default function HomePage() {
       return;
     }
 
+    const resolvedImageDataUrl = imageDataUrl ?? resolveIngredientImagePath(validation.value);
+
     const item: FridgeItem = {
       id: createUniqueId("fridge"),
       name: validation.value,
       category,
       addedDate: toDateInputValue(new Date()),
       expiryDate,
-      imageDataUrl,
+      imageDataUrl: resolvedImageDataUrl,
     };
 
     setFridgeItems((prev) => [...prev, item]);
@@ -1241,6 +1273,7 @@ export default function HomePage() {
         saveExpiryDate,
         configuredQuickItems,
         quickSelectedNames,
+        resolveIngredientImage: (item) => item.imageDataUrl ?? resolveIngredientImagePath(item.name) ?? null,
         toggleQuickItem,
       }}
     />
