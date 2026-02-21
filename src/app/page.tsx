@@ -566,7 +566,25 @@ export default function HomePage() {
     setFridgeActionMessage(`"${trimmed}" 재료를 추가했습니다.`);
   };
 
-  const addQuickItem = (item: QuickItem) => {
+  const toggleQuickItem = (item: QuickItem) => {
+    const normalized = item.name.trim().toLowerCase();
+    const isSelected = fridgeItems.some(
+      (fridgeItem) => fridgeItem.name.trim().toLowerCase() === normalized,
+    );
+
+    if (isSelected) {
+      setFridgeItems((prev) =>
+        prev.filter((fridgeItem) => fridgeItem.name.trim().toLowerCase() !== normalized),
+      );
+
+      if (editingExpiryTarget?.name.trim().toLowerCase() === normalized) {
+        setEditingExpiryTarget(null);
+      }
+
+      setFridgeActionMessage(`"${item.name}" 재료 선택을 해제했습니다.`);
+      return;
+    }
+
     addFridgeItem(item.name, item.category, dateAfter(item.defaultExpiryDays));
   };
 
@@ -1169,7 +1187,7 @@ export default function HomePage() {
                         <button
                           key={item.name}
                           type="button"
-                          onClick={() => addQuickItem(item)}
+                          onClick={() => toggleQuickItem(item)}
                           className={`rounded-full px-3 py-1.5 text-sm font-semibold transition ${isSelected ? "bg-orange-100 text-orange-700 ring-1 ring-orange-300" : "bg-slate-100 text-slate-700 hover:bg-orange-100 hover:text-orange-600"}`}
                         >
                           {isSelected ? "✓ " : "+ "}
