@@ -279,6 +279,7 @@ export default function HomePage() {
   const [recommendOnlyReady, setRecommendOnlyReady] = useState(false);
   const [recipeCategoryFilter, setRecipeCategoryFilter] = useState<RecipeFilterCategory>("all");
   const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(null);
+  const [recipeStepChecked, setRecipeStepChecked] = useState<Record<string, number[]>>({});
   const [fridgeActionMessage, setFridgeActionMessage] = useState<string | null>(null);
   const [importPayload, setImportPayload] = useState("");
   const [dataOpsMessage, setDataOpsMessage] = useState<string | null>(null);
@@ -695,6 +696,25 @@ export default function HomePage() {
   const dismissNotice = (noticeId: string) => {
     setDismissedNoticeIds((prev) => [...prev, noticeId]);
   };
+
+  const toggleRecipeStep = (recipeId: string, stepIndex: number) => {
+    setRecipeStepChecked((prev) => {
+      const next = new Set(prev[recipeId] ?? []);
+
+      if (next.has(stepIndex)) {
+        next.delete(stepIndex);
+      } else {
+        next.add(stepIndex);
+      }
+
+      return {
+        ...prev,
+        [recipeId]: Array.from(next).sort((a, b) => a - b),
+      };
+    });
+  };
+
+  const getCheckedStepCount = (recipeId: string) => recipeStepChecked[recipeId]?.length ?? 0;
 
   const toggleNotification = async () => {
     if (!("Notification" in window)) {
@@ -1157,11 +1177,32 @@ export default function HomePage() {
                 </div>
 
                 {isExpanded ? (
-                  <ol className="mt-3 list-inside list-decimal space-y-1 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
-                    {recipe.steps.map((step, index) => (
-                      <li key={`${recipe.id}-step-${index}`}>{step}</li>
-                    ))}
-                  </ol>
+                  <div className="mt-3 space-y-2 rounded-xl bg-slate-50 p-3">
+                    <p className="text-xs font-semibold text-slate-500">
+                      조리 진행도: {getCheckedStepCount(recipe.id)} / {recipe.steps.length}
+                    </p>
+                    <ol className="space-y-2 text-sm text-slate-700">
+                      {recipe.steps.map((step, index) => {
+                        const checked = (recipeStepChecked[recipe.id] ?? []).includes(index);
+
+                        return (
+                          <li key={`${recipe.id}-step-${index}`}>
+                            <button
+                              type="button"
+                              onClick={() => toggleRecipeStep(recipe.id, index)}
+                              className="flex w-full items-start gap-2 rounded-lg px-2 py-1 text-left hover:bg-white"
+                            >
+                              <span className="pt-0.5 text-base" aria-hidden="true">{checked ? "✅" : "⬜️"}</span>
+                              <span className={checked ? "text-slate-400 line-through" : "text-slate-700"}>
+                                <span className="mr-1 font-semibold text-slate-500">{index + 1}.</span>
+                                {step}
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  </div>
                 ) : null}
               </div>
             </div>
