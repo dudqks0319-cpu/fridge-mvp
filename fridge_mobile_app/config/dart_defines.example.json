@@ -1,0 +1,10 @@
+{
+  "SUPABASE_URL": "https://<your-project-ref>.supabase.co",
+  "SUPABASE_ANON_KEY": "<your-supabase-anon-key>",
+  "ONESIGNAL_APP_ID": "<your-onesignal-app-id>",
+  "REVENUECAT_APPLE_API_KEY": "<your-revenuecat-apple-api-key>",
+  "REVENUECAT_GOOGLE_API_KEY": "<your-revenuecat-google-api-key>",
+  "ENABLE_FIREBASE": "true",
+  "ENABLE_ANALYTICS": "true",
+  "ENABLE_CRASHLYTICS": "true"
+}
