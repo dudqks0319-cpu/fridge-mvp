@@ -1,0 +1,5 @@
+app_identifier("com.dudqks.fridge_mobile_app")
+apple_id(ENV["APPLE_ID"])
+
+# Android package name
+package_name("com.dudqks.fridge_mobile_app")

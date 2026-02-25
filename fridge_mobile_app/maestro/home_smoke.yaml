@@ -1,0 +1,7 @@
+appId: com.dudqks.fridge_mobile_app
+---
+- launchApp
+- assertVisible: "냉장고를 부탁해"
+- assertVisible: "냉장고"
+- tapOn: "레시피"
+- assertVisible: "추천 레시피"

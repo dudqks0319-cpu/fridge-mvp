@@ -1,0 +1,23 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Build and upload iOS beta to TestFlight"
+  lane :beta do
+    sh("flutter pub get")
+    sh("flutter build ipa --release")
+    upload_to_testflight
+  end
+end
+
+platform :android do
+  desc "Build and upload Android beta to Google Play Internal track"
+  lane :beta do
+    sh("flutter pub get")
+    sh("flutter build appbundle --release")
+    upload_to_play_store(
+      track: "internal",
+      json_key_data: ENV["GOOGLE_PLAY_JSON_KEY"],
+      aab: "build/app/outputs/bundle/release/app-release.aab",
+    )
+  end
+end

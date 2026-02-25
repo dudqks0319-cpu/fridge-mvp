@@ -1,0 +1,7 @@
+appId: com.dudqks.fridge_mobile_app
+---
+- launchApp
+- tapOn: "레시피"
+- assertVisible: "추천 레시피"
+- tapOn: "지금 바로 가능"
+- assertVisible: "일치율"

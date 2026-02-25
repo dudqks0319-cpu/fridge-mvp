@@ -1,0 +1,70 @@
+name: Mobile Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Release target"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - ios
+          - android
+          - both
+
+jobs:
+  fastlane-release:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: fridge_mobile_app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.2"
+          bundler-cache: true
+          working-directory: fridge_mobile_app
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install Dart dependencies
+        run: flutter pub get
+
+      - name: Fastlane iOS beta
+        if: ${{ inputs.target == 'ios' || inputs.target == 'both' }}
+        run: bundle exec fastlane ios beta
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APP_STORE_CONNECT_API_KEY_JSON: ${{ secrets.APP_STORE_CONNECT_API_KEY_JSON }}
+
+      - name: Fastlane Android beta
+        if: ${{ inputs.target == 'android' || inputs.target == 'both' }}
+        run: bundle exec fastlane android beta
+        env:
+          GOOGLE_PLAY_JSON_KEY: ${{ secrets.GOOGLE_PLAY_JSON_KEY }}
+
+  eas-submit:
+    if: ${{ inputs.target == 'ios' || inputs.target == 'android' || inputs.target == 'both' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
+
+      - name: EAS project status
+        run: eas whoami || true

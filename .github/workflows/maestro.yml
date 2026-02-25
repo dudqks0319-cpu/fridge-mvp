@@ -1,0 +1,38 @@
+name: Maestro Smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  maestro-cloud:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: fridge_mobile_app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build Android APK for Maestro
+        run: flutter build apk --release
+
+      - name: Run Maestro Cloud (optional)
+        if: ${{ secrets.MAESTRO_API_KEY != '' }}
+        uses: mobile-dev-inc/action-maestro-cloud@v2
+        with:
+          api-key: ${{ secrets.MAESTRO_API_KEY }}
+          app-file: fridge_mobile_app/build/app/outputs/flutter-apk/app-release.apk
+          project-id: ${{ secrets.MAESTRO_PROJECT_ID }}
+          flow-file: fridge_mobile_app/maestro/home_smoke.yaml
+
+      - name: Note when secrets are missing
+        if: ${{ secrets.MAESTRO_API_KEY == '' }}
+        run: echo "MAESTRO_API_KEY not set. Skipping Maestro Cloud run."
