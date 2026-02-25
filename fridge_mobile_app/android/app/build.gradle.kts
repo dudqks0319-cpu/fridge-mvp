@@ -1,10 +1,20 @@
 plugins {
     id("com.android.application")
     id("kotlin-android")
-    id("com.google.gms.google-services")
-    id("com.google.firebase.crashlytics")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+val hasGoogleServices =
+    file("google-services.json").exists() ||
+    file("src/debug/google-services.json").exists() ||
+    file("src/release/google-services.json").exists()
+
+if (hasGoogleServices) {
+    apply(plugin = "com.google.gms.google-services")
+    apply(plugin = "com.google.firebase.crashlytics")
+} else {
+    logger.lifecycle("google-services.json not found. Skipping Google Services and Crashlytics plugins for local builds.")
 }
 
 android {

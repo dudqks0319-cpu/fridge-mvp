@@ -122,6 +122,11 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
   static const _guestStorageUserId = 'guest';
   static const _localStoragePrefix = 'fridge_mobile_app:v2';
   static const _cloudTable = 'fridge_app_state';
+  static const Set<String> _defaultPassiveCondimentIds = <String>{
+    'soy_sauce',
+    'sugar',
+    'salt',
+  };
 
   int _tabIndex = 0;
   bool _recipeReadyOnly = false;
@@ -134,6 +139,9 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
     'egg',
     'milk',
     'green_onion',
+  };
+  final Set<String> _passiveCondimentIds = <String>{
+    ..._defaultPassiveCondimentIds,
   };
   final TextEditingController _shoppingSearchController =
       TextEditingController();
@@ -152,8 +160,13 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
   String _newShoppingName = '';
   String _selectedPantryCategory = '전체';
 
-  Set<String> get _ownedIngredientIds =>
+  Set<String> get _pantryIngredientIds =>
       _pantryEntries.map((entry) => entry.ingredient.id).toSet();
+
+  Set<String> get _ownedIngredientIds => <String>{
+    ..._pantryIngredientIds,
+    ..._passiveCondimentIds,
+  };
 
   List<RecipeMatch> get _recipeMatches {
     final owned = _ownedIngredientIds;
@@ -268,6 +281,7 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
           .toList(),
       'bookmarkedRecipeIds': _bookmarkedRecipeIds.toList(),
       'essentialIngredientIds': _essentialIngredientIds.toList(),
+      'passiveCondimentIds': _passiveCondimentIds.toList(),
       'measureMode': _measureMode.name,
     };
   }
@@ -467,6 +481,7 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
     final shopping = <ShoppingEntry>[];
     final bookmarked = <String>{};
     final essentials = <String>{};
+    final condiments = <String>{};
     var nextMeasureMode = MeasureMode.simple;
 
     final pantryRaw = payload['pantryEntries'];
@@ -508,6 +523,20 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
       }
     }
 
+    final condimentsRaw = payload['passiveCondimentIds'];
+    if (condimentsRaw is List) {
+      for (final item in condimentsRaw) {
+        if (item is! String) {
+          continue;
+        }
+
+        final ingredient = ingredientById[item];
+        if (ingredient != null && ingredient.category == '양념') {
+          condiments.add(item);
+        }
+      }
+    }
+
     final modeRaw = payload['measureMode'];
     if (modeRaw is String && modeRaw == MeasureMode.precise.name) {
       nextMeasureMode = MeasureMode.precise;
@@ -535,6 +564,9 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
               ? <String>{'egg', 'milk', 'green_onion'}
               : essentials,
         );
+      _passiveCondimentIds
+        ..clear()
+        ..addAll(condiments.isEmpty ? _defaultPassiveCondimentIds : condiments);
       _measureMode = nextMeasureMode;
     });
   }
@@ -659,6 +691,17 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
     _schedulePersistenceSync();
   }
 
+  void _togglePassiveCondiment(String ingredientId) {
+    setState(() {
+      if (_passiveCondimentIds.contains(ingredientId)) {
+        _passiveCondimentIds.remove(ingredientId);
+      } else {
+        _passiveCondimentIds.add(ingredientId);
+      }
+    });
+    _schedulePersistenceSync();
+  }
+
   @override
   void dispose() {
     _authSubscription?.cancel();
@@ -692,6 +735,37 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
     _schedulePersistenceSync();
   }
 
+  IngredientOption? _resolveIngredientOption(
+    String rawName, {
+    String? ingredientId,
+  }) {
+    if (ingredientId != null && ingredientId.isNotEmpty) {
+      final byId = ingredientById[ingredientId];
+      if (byId != null) {
+        return byId;
+      }
+    }
+
+    final normalized = normalizeIngredientToken(rawName);
+    if (normalized.isEmpty) {
+      return null;
+    }
+
+    final exact = ingredientSearchIndex[normalized];
+    if (exact != null) {
+      return exact;
+    }
+
+    for (final candidate in ingredientSearchIndex.entries) {
+      if (candidate.key.contains(normalized) ||
+          normalized.contains(candidate.key)) {
+        return candidate.value;
+      }
+    }
+
+    return null;
+  }
+
   int _addShoppingEntries(
     List<IngredientOption> ingredients, {
     required String reason,
@@ -701,8 +775,16 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
 
     setState(() {
       for (final ingredient in ingredients) {
+        final shoppingName = formatIngredientDisplayName(
+          ingredient,
+          includeUnit: true,
+        );
         final exists = _shoppingEntries.any(
-          (entry) => entry.name == ingredient.name && !entry.checked,
+          (entry) =>
+              !entry.checked &&
+              ((entry.ingredientId != null &&
+                      entry.ingredientId == ingredient.id) ||
+                  entry.name == shoppingName),
         );
 
         if (exists) {
@@ -712,7 +794,7 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
         _shoppingEntries.add(
           ShoppingEntry(
             id: createLocalId(),
-            name: ingredient.name,
+            name: shoppingName,
             reason: reason,
             recipeName: recipeName,
             ingredientId: ingredient.id,
@@ -756,6 +838,18 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
     _showToast('"${match.recipe.name}" 부족 재료 $addedCount개를 담았습니다.');
   }
 
+  void _openRecipeDetail(RecipeMatch match) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => RecipeDetailPage(
+          match: match,
+          ownedIngredientIds: _ownedIngredientIds,
+          onAddMissingToShopping: () => _addMissingIngredientsToShopping(match),
+        ),
+      ),
+    );
+  }
+
   void _addMissingEssentialToShopping() {
     final addedCount = _addShoppingEntries(
       _missingEssentialIngredients,
@@ -777,16 +871,16 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
       return;
     }
 
-    IngredientOption? ingredient;
-    for (final item in ingredientOptions) {
-      if (item.name == normalized) {
-        ingredient = item;
-        break;
-      }
-    }
+    final ingredient = _resolveIngredientOption(normalized);
+    final shoppingName = ingredient == null
+        ? normalized
+        : formatIngredientDisplayName(ingredient, includeUnit: true);
 
     final exists = _shoppingEntries.any(
-      (entry) => entry.name == normalized && !entry.checked,
+      (entry) =>
+          !entry.checked &&
+          ((ingredient != null && entry.ingredientId == ingredient.id) ||
+              entry.name == shoppingName),
     );
 
     if (exists) {
@@ -798,7 +892,7 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
       _shoppingEntries.add(
         ShoppingEntry(
           id: createLocalId(),
-          name: normalized,
+          name: shoppingName,
           reason: '직접 추가',
           ingredientId: ingredient?.id,
           checked: false,
@@ -843,24 +937,30 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
       return;
     }
 
+    final removableEntryIds = <String>{};
+    final skippedEntries = <ShoppingEntry>[];
+    var movedCount = 0;
+    var alreadyOwnedCount = 0;
+
     setState(() {
       final today = DateTime.now();
 
       for (final entry in checked) {
-        final ingredientId = entry.ingredientId;
-        if (ingredientId == null) {
-          continue;
-        }
-
-        final ingredient = ingredientById[ingredientId];
+        final ingredient = _resolveIngredientOption(
+          entry.name,
+          ingredientId: entry.ingredientId,
+        );
         if (ingredient == null) {
+          skippedEntries.add(entry);
           continue;
         }
+        removableEntryIds.add(entry.id);
 
         final alreadyOwned = _pantryEntries.any(
-          (pantryEntry) => pantryEntry.ingredient.id == ingredientId,
+          (pantryEntry) => pantryEntry.ingredient.id == ingredient.id,
         );
         if (alreadyOwned) {
+          alreadyOwnedCount += 1;
           continue;
         }
 
@@ -872,14 +972,33 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
             expiryDate: DateTime(today.year, today.month, today.day + 7),
           ),
         );
+        movedCount += 1;
       }
 
       _pantryEntries.sort((a, b) => a.expiryDate.compareTo(b.expiryDate));
-      _shoppingEntries.removeWhere((entry) => entry.checked);
+      _shoppingEntries.removeWhere((entry) => removableEntryIds.contains(entry.id));
     });
-    _schedulePersistenceSync();
+    if (removableEntryIds.isNotEmpty || movedCount > 0) {
+      _schedulePersistenceSync();
+    }
 
-    _showToast('체크된 장보기 항목을 냉장고에 반영했습니다.');
+    final parts = <String>[];
+    if (movedCount > 0) {
+      parts.add('냉장고 반영 $movedCount개');
+    }
+    if (alreadyOwnedCount > 0) {
+      parts.add('이미 보유 $alreadyOwnedCount개');
+    }
+    if (skippedEntries.isNotEmpty) {
+      parts.add('미매칭 ${skippedEntries.length}개');
+    }
+
+    if (parts.isEmpty) {
+      _showToast('반영 가능한 항목이 없습니다.');
+      return;
+    }
+
+    _showToast(parts.join(' · '));
   }
 
   void _showToast(String message) {
@@ -947,7 +1066,9 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
 
     final nextExpiryDate = DateTime(picked.year, picked.month, picked.day);
     _upsertPantryEntry(entry.copyWith(expiryDate: nextExpiryDate));
-    _showToast('${entry.ingredient.name} 소비기한을 수정했습니다.');
+    _showToast(
+      '${formatIngredientDisplayName(entry.ingredient, includeUnit: true)} 소비기한을 수정했습니다.',
+    );
   }
 
   Future<void> _openCoupangLink(String keyword) async {
@@ -1064,7 +1185,12 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
                 const SizedBox(height: 6),
                 Text(
                   _missingEssentialIngredients
-                      .map((ingredient) => ingredient.name)
+                      .map(
+                        (ingredient) => formatIngredientDisplayName(
+                          ingredient,
+                          includeUnit: true,
+                        ),
+                      )
                       .join(', '),
                   style: const TextStyle(color: Color(0xFF0369A1)),
                 ),
@@ -1100,7 +1226,12 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
                     fit: BoxFit.cover,
                   ),
                 ),
-                title: Text(entry.ingredient.name),
+                title: Text(
+                  formatIngredientDisplayName(
+                    entry.ingredient,
+                    includeUnit: true,
+                  ),
+                ),
                 subtitle: Text('소비기한 ${formatKoreanDate(entry.expiryDate)}'),
                 trailing: _DDayBadge(
                   daysLeft: calculateDayDiff(entry.expiryDate),
@@ -1142,7 +1273,7 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  '백종원/만개의레시피 재료를 카테고리별로 준비해 두었습니다.\n추가된 날짜와 소비기한 마감 날짜를 입력해서 관리해보세요.',
+                  '집밥 레시피 재료를 카테고리별로 준비해 두었습니다.\n추가된 날짜와 소비기한 마감 날짜를 입력해서 관리해보세요.',
                   style: TextStyle(
                     fontSize: 14,
                     color: Color(0xFF6B7280),
@@ -1315,7 +1446,7 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
         ),
         const SizedBox(height: 8),
         Text(
-          '내 냉장고 재료와의 일치율 순으로 정렬됩니다. (${visibleMatches.length}개)',
+          '내 냉장고 재료와의 일치율 순으로 정렬됩니다. (노출 ${visibleMatches.length}개 / 전체 ${recipeCatalog.length}개)',
           style: const TextStyle(color: Color(0xFF6B7280)),
         ),
         const SizedBox(height: 14),
@@ -1327,9 +1458,39 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: const Color(0xFFE5E7EB)),
             ),
-            child: const Text(
-              '조건에 맞는 레시피가 없습니다.\n필터를 해제하거나 냉장고 재료를 추가해 주세요.',
-              style: TextStyle(height: 1.4, color: Color(0xFF4B5563)),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '조건에 맞는 레시피가 없습니다.\n필터를 해제하거나 냉장고 재료를 추가해 주세요.',
+                  style: TextStyle(height: 1.4, color: Color(0xFF4B5563)),
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    if (_recipeReadyOnly || _bookmarkedOnly)
+                      FilledButton.tonalIcon(
+                        onPressed: () {
+                          setState(() {
+                            _recipeReadyOnly = false;
+                            _bookmarkedOnly = false;
+                          });
+                        },
+                        icon: const Icon(Icons.filter_alt_off),
+                        label: const Text('필터 초기화'),
+                      ),
+                    FilledButton.tonalIcon(
+                      onPressed: () {
+                        setState(() => _tabIndex = 1);
+                      },
+                      icon: const Icon(Icons.kitchen),
+                      label: const Text('냉장고 재료 추가'),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
         for (final match in visibleMatches)
@@ -1340,6 +1501,7 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
             onToggleBookmark: () => _toggleBookmark(match.recipe.id),
             onAddMissingToShopping: () =>
                 _addMissingIngredientsToShopping(match),
+            onOpenDetail: () => _openRecipeDetail(match),
           ),
         if (!_bookmarkedOnly && _bookmarkedRecipes.isNotEmpty) ...[
           const SizedBox(height: 18),
@@ -1454,7 +1616,13 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     TextButton(
-                      onPressed: () => _openCoupangLink(entry.name),
+                      onPressed: () {
+                        final ingredient = _resolveIngredientOption(
+                          entry.name,
+                          ingredientId: entry.ingredientId,
+                        );
+                        _openCoupangLink(ingredient?.name ?? entry.name);
+                      },
                       child: const Text('쿠팡'),
                     ),
                     IconButton(
@@ -1513,6 +1681,9 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
     final essentialCandidates = ingredientOptions
         .where((ingredient) => ingredient.category != '양념')
         .take(14)
+        .toList();
+    final condimentCandidates = ingredientOptions
+        .where((ingredient) => ingredient.category == '양념')
         .toList();
 
     return ListView(
@@ -1590,8 +1761,55 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
             final selected = _essentialIngredientIds.contains(ingredient.id);
             return FilterChip(
               selected: selected,
-              label: Text(ingredient.name),
+              label: Text(
+                formatIngredientDisplayName(ingredient, includeUnit: true),
+              ),
               onSelected: (_) => _toggleEssentialIngredient(ingredient.id),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 18),
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                '패시브 조미료(항상 보유)',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE0F2FE),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Text(
+                '${_passiveCondimentIds.length}개',
+                style: const TextStyle(
+                  color: Color(0xFF0369A1),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          '자주 사지 않아도 보유 중인 조미료를 선택해 두면 레시피 부족 재료 계산에 자동 반영됩니다.',
+          style: TextStyle(color: Color(0xFF64748B), height: 1.4),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: condimentCandidates.map((ingredient) {
+            final selected = _passiveCondimentIds.contains(ingredient.id);
+            return FilterChip(
+              selected: selected,
+              label: Text(
+                formatIngredientDisplayName(ingredient, includeUnit: true),
+              ),
+              onSelected: (_) => _togglePassiveCondiment(ingredient.id),
             );
           }).toList(),
         ),
@@ -1793,7 +2011,10 @@ class PantryCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    entry.ingredient.name,
+                    formatIngredientDisplayName(
+                      entry.ingredient,
+                      includeUnit: true,
+                    ),
                     style: const TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w800,
@@ -1904,6 +2125,7 @@ class RecipeCard extends StatelessWidget {
     required this.ownedIngredientIds,
     required this.onToggleBookmark,
     required this.onAddMissingToShopping,
+    required this.onOpenDetail,
   });
 
   final RecipeMatch match;
@@ -1911,6 +2133,7 @@ class RecipeCard extends StatelessWidget {
   final Set<String> ownedIngredientIds;
   final VoidCallback onToggleBookmark;
   final VoidCallback onAddMissingToShopping;
+  final VoidCallback onOpenDetail;
 
   @override
   Widget build(BuildContext context) {
@@ -1925,19 +2148,29 @@ class RecipeCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(14),
-              child: Image.asset(
-                recipe.photoUrl,
-                width: double.infinity,
-                height: 170,
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) => Container(
+            GestureDetector(
+              onTap: onOpenDetail,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: Image.asset(
+                  recipe.photoUrl,
+                  width: double.infinity,
                   height: 170,
-                  color: const Color(0xFFF1F3F8),
-                  child: const Center(child: Icon(Icons.restaurant, size: 40)),
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) => Container(
+                    height: 170,
+                    color: const Color(0xFFF1F3F8),
+                    child: const Center(
+                      child: Icon(Icons.restaurant, size: 40),
+                    ),
+                  ),
                 ),
               ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              '사진을 누르면 레시피 상세를 볼 수 있어요.',
+              style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
             ),
             const SizedBox(height: 12),
             Row(
@@ -2023,7 +2256,9 @@ class RecipeCard extends StatelessWidget {
                 final owned = ownedIngredientIds.contains(ingredientId);
 
                 return Chip(
-                  label: Text(ingredient.name),
+                  label: Text(
+                    formatIngredientDisplayName(ingredient, includeUnit: true),
+                  ),
                   side: BorderSide(
                     color: owned
                         ? const Color(0xFFFB923C)
@@ -2061,6 +2296,223 @@ class RecipeCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class RecipeDetailPage extends StatelessWidget {
+  const RecipeDetailPage({
+    super.key,
+    required this.match,
+    required this.ownedIngredientIds,
+    required this.onAddMissingToShopping,
+  });
+
+  final RecipeMatch match;
+  final Set<String> ownedIngredientIds;
+  final VoidCallback onAddMissingToShopping;
+
+  @override
+  Widget build(BuildContext context) {
+    final recipe = match.recipe;
+    final ownedIngredients = recipe.ingredientIds
+        .where(ownedIngredientIds.contains)
+        .map((ingredientId) => ingredientById[ingredientId])
+        .whereType<IngredientOption>()
+        .toList();
+    final missingIngredients = recipe.ingredientIds
+        .where((ingredientId) => !ownedIngredientIds.contains(ingredientId))
+        .map((ingredientId) => ingredientById[ingredientId])
+        .whereType<IngredientOption>()
+        .toList();
+
+    return Scaffold(
+      appBar: AppBar(title: Text(recipe.name)),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 26),
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: Image.asset(
+              recipe.photoUrl,
+              width: double.infinity,
+              height: 220,
+              fit: BoxFit.cover,
+              errorBuilder: (context, error, stackTrace) => Container(
+                height: 220,
+                color: const Color(0xFFF1F3F8),
+                child: const Center(child: Icon(Icons.restaurant, size: 42)),
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            recipe.name,
+            style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${recipe.source} · 일치율 ${match.matchPercent}%',
+            style: const TextStyle(
+              color: Color(0xFF6B7280),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            '레시피 설명',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF334155),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            recipe.summary,
+            style: const TextStyle(color: Color(0xFF4B5563), height: 1.45),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFD1FAE5)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '내가 가진 재료 (${ownedIngredients.length}개)',
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF065F46),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                if (ownedIngredients.isEmpty)
+                  const Text(
+                    '아직 보유한 재료가 없어요. 냉장고 탭에서 재료를 추가해보세요.',
+                    style: TextStyle(color: Color(0xFF6B7280), height: 1.4),
+                  )
+                else
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: ownedIngredients
+                        .map(
+                          (ingredient) => Chip(
+                            label: Text(
+                              formatIngredientDisplayName(
+                                ingredient,
+                                includeUnit: true,
+                              ),
+                            ),
+                            backgroundColor: const Color(0xFFECFDF5),
+                            side: const BorderSide(color: Color(0xFF86EFAC)),
+                            labelStyle: const TextStyle(
+                              color: Color(0xFF166534),
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        )
+                        .toList(),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFFDE68A)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '부족 재료 (${missingIngredients.length}개)',
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF92400E),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                if (missingIngredients.isEmpty)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFECFDF3),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Text(
+                      '부족한 재료가 없어서 지금 바로 만들 수 있어요.',
+                      style: TextStyle(
+                        color: Color(0xFF166534),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  )
+                else ...[
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: missingIngredients
+                        .map(
+                          (ingredient) => Chip(
+                            label: Text(
+                              formatIngredientDisplayName(
+                                ingredient,
+                                includeUnit: true,
+                              ),
+                            ),
+                            side: const BorderSide(color: Color(0xFFFBBF24)),
+                            backgroundColor: const Color(0xFFFEF3C7),
+                            labelStyle: const TextStyle(
+                              color: Color(0xFF92400E),
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                  const SizedBox(height: 10),
+                  FilledButton.tonalIcon(
+                    onPressed: onAddMissingToShopping,
+                    icon: const Icon(Icons.shopping_cart),
+                    label: const Text('부족 재료 장보기에 담기'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: recipe.sourceUrl));
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('레시피 링크를 클립보드에 복사했습니다.')),
+                  );
+                }
+              },
+              icon: const Icon(Icons.link, size: 18),
+              label: const Text('원문 링크 복사'),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -2277,7 +2729,10 @@ class _PantryEditorSheetState extends State<PantryEditorSheet> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            _selectedIngredient.name,
+                            formatIngredientDisplayName(
+                              _selectedIngredient,
+                              includeUnit: true,
+                            ),
                             style: const TextStyle(
                               fontWeight: FontWeight.w700,
                               fontSize: 15,
@@ -2342,6 +2797,7 @@ class _IngredientPickerSheet extends StatefulWidget {
 
 class _IngredientPickerSheetState extends State<_IngredientPickerSheet> {
   final TextEditingController _searchController = TextEditingController();
+  final Set<String> _expandedCategories = <String>{};
   String _query = '';
 
   @override
@@ -2358,7 +2814,7 @@ class _IngredientPickerSheetState extends State<_IngredientPickerSheet> {
           ? null
           : (ingredient) {
               final searchable =
-                  '${ingredient.name} ${ingredient.category} ${ingredient.id}'
+                  '${ingredient.name} ${ingredient.category} ${ingredient.id} ${ingredient.aliases.join(' ')}'
                       .toLowerCase();
               return searchable.contains(keyword);
             },
@@ -2408,57 +2864,128 @@ class _IngredientPickerSheetState extends State<_IngredientPickerSheet> {
               ),
             ),
             const SizedBox(height: 10),
+            const Text(
+              '카테고리를 눌러 하위 재료를 펼쳐보세요',
+              style: TextStyle(
+                fontSize: 12,
+                color: Color(0xFF64748B),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
             Expanded(
               child: hasResults
                   ? ListView(
                       children: [
-                        for (final entry in grouped.entries) ...[
-                          Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 8),
-                            child: Text(
-                              entry.key,
-                              style: const TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w800,
-                                color: Color(0xFF6B7280),
+                        for (final entry in grouped.entries)
+                          Card(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            child: ExpansionTile(
+                              key: PageStorageKey<String>(
+                                'ingredient-category-${entry.key}',
                               ),
-                            ),
-                          ),
-                          for (final ingredient in entry.value)
-                            ListTile(
-                              contentPadding: EdgeInsets.zero,
-                              leading: ClipRRect(
-                                borderRadius: BorderRadius.circular(8),
-                                child: Image.asset(
-                                  ingredient.photoUrl,
-                                  width: 40,
-                                  height: 40,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (context, error, stackTrace) =>
-                                      Container(
+                              initiallyExpanded:
+                                  keyword.isNotEmpty ||
+                                  _expandedCategories.contains(entry.key),
+                              onExpansionChanged: (expanded) {
+                                if (keyword.isNotEmpty) {
+                                  return;
+                                }
+
+                                setState(() {
+                                  if (expanded) {
+                                    _expandedCategories.add(entry.key);
+                                  } else {
+                                    _expandedCategories.remove(entry.key);
+                                  }
+                                });
+                              },
+                              tilePadding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                              ),
+                              childrenPadding: const EdgeInsets.only(
+                                left: 12,
+                                right: 8,
+                                bottom: 8,
+                              ),
+                              title: Row(
+                                children: [
+                                  Text(
+                                    entry.key,
+                                    style: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                      color: Color(0xFF334155),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 3,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFE2E8F0),
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
+                                    child: Text(
+                                      '${entry.value.length}개',
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                        color: Color(0xFF475569),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              children: [
+                                for (final ingredient in entry.value)
+                                  ListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    leading: ClipRRect(
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: Image.asset(
+                                        ingredient.photoUrl,
                                         width: 40,
                                         height: 40,
-                                        color: const Color(0xFFF1F3F8),
-                                        child: const Icon(
-                                          Icons.fastfood,
-                                          size: 20,
-                                        ),
+                                        fit: BoxFit.cover,
+                                        errorBuilder:
+                                            (context, error, stackTrace) =>
+                                                Container(
+                                                  width: 40,
+                                                  height: 40,
+                                                  color: const Color(
+                                                    0xFFF1F3F8,
+                                                  ),
+                                                  child: const Icon(
+                                                    Icons.fastfood,
+                                                    size: 20,
+                                                  ),
+                                                ),
                                       ),
-                                ),
-                              ),
-                              title: Text(ingredient.name),
-                              trailing:
-                                  ingredient.id == widget.initialSelectedId
-                                  ? const Icon(
-                                      Icons.check_circle,
-                                      color: Color(0xFFFF8A00),
-                                    )
-                                  : null,
-                              onTap: () {
-                                Navigator.of(context).pop(ingredient);
-                              },
+                                    ),
+                                    title: Text(
+                                      formatIngredientDisplayName(
+                                        ingredient,
+                                        includeUnit: true,
+                                      ),
+                                    ),
+                                    trailing:
+                                        ingredient.id ==
+                                            widget.initialSelectedId
+                                        ? const Icon(
+                                            Icons.check_circle,
+                                            color: Color(0xFFFF8A00),
+                                          )
+                                        : null,
+                                    onTap: () {
+                                      Navigator.of(context).pop(ingredient);
+                                    },
+                                  ),
+                              ],
                             ),
-                        ],
+                          ),
                       ],
                     )
                   : const Center(
@@ -2528,6 +3055,20 @@ int calculateDayDiff(DateTime expiryDate) {
 
 String createLocalId() {
   return DateTime.now().microsecondsSinceEpoch.toString();
+}
+
+String normalizeIngredientToken(String value) {
+  return value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '');
+}
+
+String formatIngredientDisplayName(
+  IngredientOption ingredient, {
+  bool includeUnit = false,
+}) {
+  if (!includeUnit || ingredient.defaultUnit == null) {
+    return ingredient.name;
+  }
+  return '${ingredient.name} (${ingredient.defaultUnit})';
 }
 
 const List<String> ingredientCategoryOrder = <String>[
@@ -2621,12 +3162,16 @@ class IngredientOption {
     required this.name,
     required this.category,
     required this.photoUrl,
+    this.defaultUnit,
+    this.aliases = const <String>[],
   });
 
   final String id;
   final String name;
   final String category;
   final String photoUrl;
+  final String? defaultUnit;
+  final List<String> aliases;
 }
 
 class PantryEntry {
@@ -2695,24 +3240,33 @@ final List<IngredientOption> ingredientOptions = [
     name: '양파',
     category: '채소',
     photoUrl: 'assets/images/ingredients/onion.jpg',
+    aliases: ['적양파', '흰양파'],
   ),
   IngredientOption(
     id: 'green_onion',
     name: '대파',
     category: '채소',
     photoUrl: 'assets/images/ingredients/green-onion.jpg',
+    aliases: ['파', '쪽파'],
   ),
   IngredientOption(
     id: 'garlic',
     name: '마늘',
     category: '채소',
     photoUrl: 'assets/images/ingredients/garlic.jpg',
+    aliases: ['다진마늘'],
   ),
   IngredientOption(
     id: 'potato',
     name: '감자',
     category: '채소',
     photoUrl: 'assets/images/ingredients/potato.jpg',
+  ),
+  IngredientOption(
+    id: 'sweet_potato',
+    name: '고구마',
+    category: '채소',
+    photoUrl: 'assets/images/ingredients/sweet-potato.jpg',
   ),
   IngredientOption(
     id: 'zucchini',
@@ -2725,6 +3279,12 @@ final List<IngredientOption> ingredientOptions = [
     name: '양배추',
     category: '채소',
     photoUrl: 'assets/images/ingredients/cabbage.jpg',
+  ),
+  IngredientOption(
+    id: 'napa_cabbage',
+    name: '배추',
+    category: '채소',
+    photoUrl: 'assets/images/ingredients/napa-cabbage.jpg',
   ),
   IngredientOption(
     id: 'kimchi',
@@ -2749,6 +3309,7 @@ final List<IngredientOption> ingredientOptions = [
     name: '우유',
     category: '유제품',
     photoUrl: 'assets/images/ingredients/milk.jpg',
+    aliases: ['흰우유'],
   ),
   IngredientOption(
     id: 'pork',
@@ -2805,10 +3366,17 @@ final List<IngredientOption> ingredientOptions = [
     photoUrl: 'assets/images/ingredients/sugar.jpg',
   ),
   IngredientOption(
+    id: 'salt',
+    name: '소금',
+    category: '양념',
+    photoUrl: 'assets/images/ingredients/salt.jpg',
+  ),
+  IngredientOption(
     id: 'fish_cake',
     name: '어묵',
     category: '가공식품',
     photoUrl: 'assets/images/ingredients/fish-cake.jpg',
+    aliases: ['오뎅'],
   ),
   IngredientOption(
     id: 'cucumber',
@@ -2835,8 +3403,54 @@ final List<IngredientOption> ingredientOptions = [
     photoUrl: 'assets/images/ingredients/carrot.jpg',
   ),
   IngredientOption(
+    id: 'eggplant',
+    name: '가지',
+    category: '채소',
+    photoUrl: 'assets/images/ingredients/eggplant.jpg',
+  ),
+  IngredientOption(
+    id: 'lettuce',
+    name: '상추',
+    category: '채소',
+    photoUrl: 'assets/images/ingredients/lettuce.jpg',
+  ),
+  IngredientOption(
+    id: 'spinach',
+    name: '시금치',
+    category: '채소',
+    photoUrl: 'assets/images/ingredients/spinach.jpg',
+  ),
+  IngredientOption(
+    id: 'perilla_leaf',
+    name: '깻잎',
+    category: '채소',
+    photoUrl: 'assets/images/ingredients/perilla-leaf.jpg',
+  ),
+  IngredientOption(
     id: 'rice',
-    name: '밥',
+    name: '쌀',
+    category: '곡물/면',
+    photoUrl: 'assets/images/ingredients/rice.jpg',
+    defaultUnit: 'kg',
+    aliases: ['밥', '백미', 'rice'],
+  ),
+  IngredientOption(
+    id: 'ramen',
+    name: '라면',
+    category: '곡물/면',
+    photoUrl: 'assets/images/ingredients/rice.jpg',
+    aliases: ['면사리', '인스턴트면'],
+  ),
+  IngredientOption(
+    id: 'noodle',
+    name: '국수면',
+    category: '곡물/면',
+    photoUrl: 'assets/images/ingredients/rice.jpg',
+    aliases: ['국수', '면'],
+  ),
+  IngredientOption(
+    id: 'flour',
+    name: '밀가루',
     category: '곡물/면',
     photoUrl: 'assets/images/ingredients/rice.jpg',
   ),
@@ -2846,12 +3460,22 @@ final Map<String, IngredientOption> ingredientById = {
   for (final ingredient in ingredientOptions) ingredient.id: ingredient,
 };
 
+final Map<String, IngredientOption> ingredientSearchIndex = {
+  for (final ingredient in ingredientOptions)
+    ...{
+      normalizeIngredientToken(ingredient.id): ingredient,
+      normalizeIngredientToken(ingredient.name): ingredient,
+      for (final alias in ingredient.aliases) normalizeIngredientToken(alias)
+          : ingredient,
+    },
+};
+
 final List<RecipeData> recipeCatalog = [
   RecipeData(
     id: 'kimchi_stew',
-    name: '백종원 김치찌개',
+    name: '김치찌개',
     summary: '묵은지와 돼지고기를 넣어 진한 국물 맛을 내는 대표 집밥 메뉴입니다.',
-    source: '백종원/만개의레시피',
+    source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6835685',
     photoUrl: 'assets/images/recipes/kimchi-jjigae.jpg',
     ingredientIds: [
@@ -2864,10 +3488,19 @@ final List<RecipeData> recipeCatalog = [
     ],
   ),
   RecipeData(
+    id: 'tofu_kimchi',
+    name: '두부김치',
+    summary: '볶은 김치와 두부를 곁들여 간단하게 완성하는 술안주 겸 반찬 메뉴입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6915971',
+    photoUrl: 'assets/images/recipes/kimchi-jjigae.jpg',
+    ingredientIds: ['tofu', 'kimchi', 'pork', 'onion', 'green_onion', 'garlic'],
+  ),
+  RecipeData(
     id: 'jeyuk',
-    name: '백종원 제육볶음',
+    name: '제육볶음',
     summary: '양파와 대파를 듬뿍 넣어 매콤달콤하게 볶는 밥도둑 메뉴입니다.',
-    source: '백종원/만개의레시피',
+    source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6841008',
     photoUrl: 'assets/images/recipes/jeyuk-bokkeum.jpg',
     ingredientIds: [
@@ -2881,10 +3514,26 @@ final List<RecipeData> recipeCatalog = [
     ],
   ),
   RecipeData(
+    id: 'lettuce_pork_wrap',
+    name: '쌈채소 돼지고기볶음',
+    summary: '상추와 깻잎에 매콤한 돼지고기를 곁들이는 한 끼 구성 메뉴입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6892456',
+    photoUrl: 'assets/images/recipes/jeyuk-bokkeum.jpg',
+    ingredientIds: [
+      'pork',
+      'lettuce',
+      'perilla_leaf',
+      'gochujang',
+      'garlic',
+      'soy_sauce',
+    ],
+  ),
+  RecipeData(
     id: 'fish_cake_stir_fry',
-    name: '백종원 어묵볶음',
+    name: '어묵볶음',
     summary: '짭짤한 간장 양념으로 빠르게 만들 수 있는 국민 반찬입니다.',
-    source: '백종원/만개의레시피',
+    source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6903394',
     photoUrl: 'assets/images/recipes/fish-cake-stir-fry.jpg',
     ingredientIds: [
@@ -2897,10 +3546,26 @@ final List<RecipeData> recipeCatalog = [
     ],
   ),
   RecipeData(
+    id: 'eggplant_stir_fry',
+    name: '가지볶음',
+    summary: '가지를 부드럽게 볶아 만드는 간단 반찬으로 밥과 잘 어울립니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6917883',
+    photoUrl: 'assets/images/recipes/fish-cake-stir-fry.jpg',
+    ingredientIds: [
+      'eggplant',
+      'onion',
+      'green_onion',
+      'garlic',
+      'soy_sauce',
+      'sesame_oil',
+    ],
+  ),
+  RecipeData(
     id: 'cucumber_salad',
-    name: '백종원 오이무침',
+    name: '오이무침',
     summary: '새콤달콤한 양념으로 입맛을 살려주는 초간단 반찬입니다.',
-    source: '백종원/만개의레시피',
+    source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6897261',
     photoUrl: 'assets/images/recipes/cucumber-salad.jpg',
     ingredientIds: [
@@ -2913,10 +3578,28 @@ final List<RecipeData> recipeCatalog = [
     ],
   ),
   RecipeData(
+    id: 'spinach_namul',
+    name: '시금치나물',
+    summary: '데친 시금치를 양념에 무쳐 식탁에 자주 올리기 좋은 반찬입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6903050',
+    photoUrl: 'assets/images/recipes/cucumber-salad.jpg',
+    ingredientIds: ['spinach', 'garlic', 'soy_sauce', 'sesame_oil', 'salt'],
+  ),
+  RecipeData(
+    id: 'radish_salad',
+    name: '무생채',
+    summary: '아삭한 무에 매콤달콤 양념을 더한 밥반찬 스타일의 생채입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6833703',
+    photoUrl: 'assets/images/recipes/cucumber-salad.jpg',
+    ingredientIds: ['radish', 'gochugaru', 'garlic', 'sugar', 'salt', 'green_onion'],
+  ),
+  RecipeData(
     id: 'gamja_jjageuli',
-    name: '백종원 감자짜글이',
+    name: '감자짜글이',
     summary: '감자와 스팸으로 만드는 얼큰한 자작찌개 스타일 메뉴입니다.',
-    source: '백종원/만개의레시피',
+    source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6891652',
     photoUrl: 'assets/images/recipes/gamja-jjageuli.jpg',
     ingredientIds: [
@@ -2929,48 +3612,138 @@ final List<RecipeData> recipeCatalog = [
     ],
   ),
   RecipeData(
+    id: 'chicken_potato_stew',
+    name: '닭감자조림',
+    summary: '닭고기와 감자를 달큰짭짤하게 조려내는 집밥 메인 반찬입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6623046',
+    photoUrl: 'assets/images/recipes/gamja-jjageuli.jpg',
+    ingredientIds: ['chicken', 'potato', 'carrot', 'onion', 'garlic', 'soy_sauce', 'sugar'],
+  ),
+  RecipeData(
+    id: 'sweet_potato_salad',
+    name: '고구마샐러드',
+    summary: '삶은 고구마에 우유를 더해 부드럽게 만드는 간식 겸 반찬입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6879242',
+    photoUrl: 'assets/images/recipes/gamja-jjageuli.jpg',
+    ingredientIds: ['sweet_potato', 'milk', 'sugar', 'salt'],
+  ),
+  RecipeData(
     id: 'soy_sauce_tofu_rice',
     name: '간장두부덮밥',
     summary: '두부를 간장 베이스로 조려 밥 위에 올리는 간단 한그릇 요리입니다.',
-    source: '만개의레시피',
+    source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/',
     photoUrl: 'assets/images/recipes/soy-sauce-tofu-rice.jpg',
     ingredientIds: ['tofu', 'soy_sauce', 'garlic', 'green_onion', 'rice'],
   ),
   RecipeData(
+    id: 'perilla_tofu_salad',
+    name: '깻잎두부무침',
+    summary: '깻잎 향과 두부의 담백함을 살린 가벼운 반찬입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6830294',
+    photoUrl: 'assets/images/recipes/soy-sauce-tofu-rice.jpg',
+    ingredientIds: ['tofu', 'perilla_leaf', 'soy_sauce', 'sesame_oil', 'garlic'],
+  ),
+  RecipeData(
     id: 'egg_rice',
-    name: '참치간장계란밥',
+    name: '간장계란밥',
     summary: '계란과 간장만 있어도 빠르게 만들 수 있는 자취생 필수 메뉴입니다.',
-    source: '만개의레시피',
+    source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/',
     photoUrl: 'assets/images/recipes/egg-rice.jpg',
     ingredientIds: ['egg', 'soy_sauce', 'sesame_oil', 'rice'],
   ),
   RecipeData(
+    id: 'kimchi_fried_rice',
+    name: '김치볶음밥',
+    summary: '김치와 쌀을 빠르게 볶아 한 그릇으로 먹기 좋은 메뉴입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6888583',
+    photoUrl: 'assets/images/recipes/egg-rice.jpg',
+    ingredientIds: ['kimchi', 'rice', 'egg', 'green_onion', 'soy_sauce', 'sesame_oil'],
+  ),
+  RecipeData(
+    id: 'spam_egg_fried_rice',
+    name: '스팸달걀볶음밥',
+    summary: '스팸과 달걀을 더해 간단하게 완성하는 든든한 볶음밥입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6886747',
+    photoUrl: 'assets/images/recipes/egg-rice.jpg',
+    ingredientIds: ['spam', 'egg', 'green_onion', 'rice', 'soy_sauce'],
+  ),
+  RecipeData(
     id: 'doenjang_ramen',
     name: '된장라면',
     summary: '된장과 고추장을 살짝 섞어 깊은 맛을 내는 변형 라면 레시피입니다.',
-    source: '만개의레시피',
+    source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/',
     photoUrl: 'assets/images/recipes/doenjang-ramen.jpg',
-    ingredientIds: ['gochujang', 'soy_sauce', 'green_onion', 'egg'],
+    ingredientIds: ['ramen', 'gochujang', 'soy_sauce', 'green_onion', 'egg'],
+  ),
+  RecipeData(
+    id: 'simple_noodle_bowl',
+    name: '간장비빔국수',
+    summary: '국수면을 삶아 간단 양념으로 비벼 먹는 초간단 면 요리입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6900650',
+    photoUrl: 'assets/images/recipes/doenjang-ramen.jpg',
+    ingredientIds: ['noodle', 'soy_sauce', 'gochugaru', 'sugar', 'sesame_oil'],
   ),
   RecipeData(
     id: 'beef_radish_soup',
     name: '소고기무국',
     summary: '소고기와 무로 끓여 담백하면서도 깊은 맛이 나는 국 요리입니다.',
-    source: '백종원/만개의레시피',
+    source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6897772',
     photoUrl: 'assets/images/recipes/beef-radish-soup.jpg',
     ingredientIds: ['beef', 'radish', 'green_onion', 'garlic', 'soy_sauce'],
   ),
   RecipeData(
+    id: 'beef_mushroom_stir_fry',
+    name: '소고기버섯볶음',
+    summary: '소고기와 버섯을 센 불에 볶아 빠르게 완성하는 메인 반찬입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6885470',
+    photoUrl: 'assets/images/recipes/beef-radish-soup.jpg',
+    ingredientIds: ['beef', 'mushroom', 'onion', 'garlic', 'soy_sauce', 'sesame_oil'],
+  ),
+  RecipeData(
+    id: 'mushroom_tofu_soup',
+    name: '버섯두부국',
+    summary: '버섯과 두부를 넣고 담백하게 끓이는 국물 요리입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6897772',
+    photoUrl: 'assets/images/recipes/beef-radish-soup.jpg',
+    ingredientIds: ['mushroom', 'tofu', 'green_onion', 'garlic', 'soy_sauce'],
+  ),
+  RecipeData(
     id: 'egg_roll',
     name: '계란말이',
     summary: '계란에 채소를 넣어 부드럽게 말아낸 도시락 인기 반찬입니다.',
-    source: '만개의레시피',
+    source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/',
     photoUrl: 'assets/images/recipes/egg-roll.jpg',
     ingredientIds: ['egg', 'onion', 'green_onion', 'carrot'],
+  ),
+  RecipeData(
+    id: 'cabbage_egg_stir_fry',
+    name: '양배추계란볶음',
+    summary: '양배추와 달걀을 함께 볶아 가볍게 먹기 좋은 반찬입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6867256',
+    photoUrl: 'assets/images/recipes/egg-roll.jpg',
+    ingredientIds: ['cabbage', 'egg', 'onion', 'garlic', 'soy_sauce'],
+  ),
+  RecipeData(
+    id: 'napa_kimchi_soup',
+    name: '배추김치국',
+    summary: '배추와 김치를 넣어 칼칼하면서도 시원하게 끓여낸 국 요리입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6838648',
+    photoUrl: 'assets/images/recipes/kimchi-jjigae.jpg',
+    ingredientIds: ['napa_cabbage', 'kimchi', 'green_onion', 'garlic', 'soy_sauce'],
   ),
 ];

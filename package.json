@@ -12,6 +12,7 @@
     "mobile:bootstrap": "bash scripts/mobile/bootstrap-tools.sh",
     "mobile:secrets:apply": "bash scripts/mobile/apply-mobile-secrets.sh",
     "mobile:maestro": "bash scripts/mobile/run-maestro.sh",
+    "mobile:sim:both": "bash scripts/mobile/run-dual-sim-tests.sh",
     "mobile:supabase:functions:deploy": "bash scripts/mobile/deploy-supabase-functions.sh",
     "mobile:ios:sim:debug": "cd fridge_mobile_app && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer flutter build ios --simulator --debug",
     "mobile:eas:build:ios": "eas build --platform ios --profile production",

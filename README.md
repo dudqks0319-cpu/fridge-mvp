@@ -44,6 +44,7 @@ https://<your-project-ref>.supabase.co/auth/v1/callback
 pnpm test
 pnpm lint
 pnpm build
+pnpm mobile:sim:both
 ```
 
 ## 배포
