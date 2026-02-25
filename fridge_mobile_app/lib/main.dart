@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-void main() {
+import 'bootstrap/app_bootstrap.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AppBootstrap.initialize();
   runApp(const FridgeMasterApp());
 }
 
@@ -197,7 +201,7 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
           .add(entry);
     }
 
-    final categories = grouped.keys.toList()..sort((a, b) => a.compareTo(b));
+    final categories = sortIngredientCategories(grouped.keys);
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
@@ -436,7 +440,7 @@ class PantryCard extends StatelessWidget {
           children: [
             ClipRRect(
               borderRadius: BorderRadius.circular(12),
-              child: Image.network(
+              child: Image.asset(
                 entry.ingredient.photoUrl,
                 width: 74,
                 height: 74,
@@ -573,7 +577,7 @@ class RecipeCard extends StatelessWidget {
           children: [
             ClipRRect(
               borderRadius: BorderRadius.circular(14),
-              child: Image.network(
+              child: Image.asset(
                 recipe.photoUrl,
                 width: double.infinity,
                 height: 170,
@@ -694,7 +698,7 @@ class BookmarkCard extends StatelessWidget {
         contentPadding: const EdgeInsets.all(10),
         leading: ClipRRect(
           borderRadius: BorderRadius.circular(10),
-          child: Image.network(
+          child: Image.asset(
             recipe.photoUrl,
             width: 64,
             height: 64,
@@ -801,6 +805,25 @@ class _PantryEditorSheetState extends State<PantryEditorSheet> {
     });
   }
 
+  Future<void> _pickIngredient() async {
+    final selected = await showModalBottomSheet<IngredientOption>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (context) =>
+          _IngredientPickerSheet(initialSelectedId: _selectedIngredient.id),
+    );
+
+    if (selected == null) {
+      return;
+    }
+
+    setState(() {
+      _selectedIngredient = selected;
+    });
+  }
+
   void _submit() {
     final entry = PantryEntry(
       id: widget.existingEntryId ?? createLocalId(),
@@ -833,28 +856,59 @@ class _PantryEditorSheetState extends State<PantryEditorSheet> {
             const SizedBox(height: 10),
             const Text('재료 선택'),
             const SizedBox(height: 6),
-            DropdownButtonFormField<String>(
-              initialValue: _selectedIngredient.id,
-              decoration: const InputDecoration(border: OutlineInputBorder()),
-              items: ingredientOptions
-                  .map(
-                    (ingredient) => DropdownMenuItem<String>(
-                      value: ingredient.id,
-                      child: Text(
-                        '${ingredient.name} (${ingredient.category})',
+            InkWell(
+              onTap: _pickIngredient,
+              borderRadius: BorderRadius.circular(12),
+              child: Ink(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  border: Border.all(color: const Color(0xFFDDE2EA)),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.asset(
+                        _selectedIngredient.photoUrl,
+                        width: 36,
+                        height: 36,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) => Container(
+                          width: 36,
+                          height: 36,
+                          color: const Color(0xFFF1F3F8),
+                          child: const Icon(Icons.fastfood, size: 18),
+                        ),
                       ),
                     ),
-                  )
-                  .toList(),
-              onChanged: (value) {
-                if (value == null) {
-                  return;
-                }
-
-                setState(() {
-                  _selectedIngredient = ingredientById[value]!;
-                });
-              },
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _selectedIngredient.name,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 15,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            _selectedIngredient.category,
+                            style: const TextStyle(
+                              color: Color(0xFF6B7280),
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Icon(Icons.search),
+                  ],
+                ),
+              ),
             ),
             const SizedBox(height: 10),
             Row(
@@ -880,6 +934,150 @@ class _PantryEditorSheetState extends State<PantryEditorSheet> {
             SizedBox(
               width: double.infinity,
               child: FilledButton(onPressed: _submit, child: const Text('저장')),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _IngredientPickerSheet extends StatefulWidget {
+  const _IngredientPickerSheet({required this.initialSelectedId});
+
+  final String initialSelectedId;
+
+  @override
+  State<_IngredientPickerSheet> createState() => _IngredientPickerSheetState();
+}
+
+class _IngredientPickerSheetState extends State<_IngredientPickerSheet> {
+  final TextEditingController _searchController = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final keyword = _query.trim().toLowerCase();
+    final grouped = buildGroupedIngredients(
+      filter: keyword.isEmpty
+          ? null
+          : (ingredient) {
+              final searchable =
+                  '${ingredient.name} ${ingredient.category} ${ingredient.id}'
+                      .toLowerCase();
+              return searchable.contains(keyword);
+            },
+    );
+    final hasResults = grouped.values.any((items) => items.isNotEmpty);
+
+    return FractionallySizedBox(
+      heightFactor: 0.88,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          16,
+          0,
+          16,
+          16 + MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '재료 선택',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _searchController,
+              autofocus: true,
+              onChanged: (value) {
+                setState(() {
+                  _query = value;
+                });
+              },
+              decoration: InputDecoration(
+                hintText: '재료명 또는 카테고리 검색',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _query.isEmpty
+                    ? null
+                    : IconButton(
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() {
+                            _query = '';
+                          });
+                        },
+                        icon: const Icon(Icons.close),
+                      ),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Expanded(
+              child: hasResults
+                  ? ListView(
+                      children: [
+                        for (final entry in grouped.entries) ...[
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            child: Text(
+                              entry.key,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFF6B7280),
+                              ),
+                            ),
+                          ),
+                          for (final ingredient in entry.value)
+                            ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              leading: ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Image.asset(
+                                  ingredient.photoUrl,
+                                  width: 40,
+                                  height: 40,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (context, error, stackTrace) =>
+                                      Container(
+                                        width: 40,
+                                        height: 40,
+                                        color: const Color(0xFFF1F3F8),
+                                        child: const Icon(
+                                          Icons.fastfood,
+                                          size: 20,
+                                        ),
+                                      ),
+                                ),
+                              ),
+                              title: Text(ingredient.name),
+                              trailing:
+                                  ingredient.id == widget.initialSelectedId
+                                  ? const Icon(
+                                      Icons.check_circle,
+                                      color: Color(0xFFFF8A00),
+                                    )
+                                  : null,
+                              onTap: () {
+                                Navigator.of(context).pop(ingredient);
+                              },
+                            ),
+                        ],
+                      ],
+                    )
+                  : const Center(
+                      child: Text(
+                        '검색 결과가 없습니다.',
+                        style: TextStyle(color: Color(0xFF6B7280)),
+                      ),
+                    ),
             ),
           ],
         ),
@@ -943,9 +1141,53 @@ String createLocalId() {
   return DateTime.now().microsecondsSinceEpoch.toString();
 }
 
-String photoUrl(String keyword, int lock) {
-  final encodedKeyword = Uri.encodeComponent(keyword);
-  return 'https://loremflickr.com/640/420/$encodedKeyword?lock=$lock';
+const List<String> ingredientCategoryOrder = <String>[
+  '채소',
+  '육류',
+  '유제품',
+  '가공식품',
+  '양념',
+  '곡물/면',
+];
+
+Map<String, List<IngredientOption>> buildGroupedIngredients({
+  bool Function(IngredientOption ingredient)? filter,
+}) {
+  final grouped = <String, List<IngredientOption>>{};
+
+  for (final ingredient in ingredientOptions) {
+    if (filter != null && !filter(ingredient)) {
+      continue;
+    }
+
+    grouped
+        .putIfAbsent(ingredient.category, () => <IngredientOption>[])
+        .add(ingredient);
+  }
+
+  final orderedCategories = sortIngredientCategories(grouped.keys);
+
+  final ordered = <String, List<IngredientOption>>{};
+  for (final category in orderedCategories) {
+    final categoryItems = List<IngredientOption>.of(grouped[category]!)
+      ..sort((a, b) => a.name.compareTo(b.name));
+    ordered[category] = categoryItems;
+  }
+
+  return ordered;
+}
+
+List<String> sortIngredientCategories(Iterable<String> categories) {
+  final values = categories.toSet();
+  final others = values
+      .where((category) => !ingredientCategoryOrder.contains(category))
+      .toList()
+    ..sort((a, b) => a.compareTo(b));
+
+  return <String>[
+    ...ingredientCategoryOrder.where(values.contains),
+    ...others,
+  ];
 }
 
 class IngredientOption {
@@ -1008,156 +1250,156 @@ class RecipeMatch {
   double get matchRate => totalCount == 0 ? 0 : matchedCount / totalCount;
 }
 
-const List<IngredientOption> ingredientOptions = [
+final List<IngredientOption> ingredientOptions = [
   IngredientOption(
     id: 'onion',
     name: '양파',
     category: '채소',
-    photoUrl: 'https://loremflickr.com/320/240/onion?lock=11',
+    photoUrl: 'assets/images/ingredients/onion.jpg',
   ),
   IngredientOption(
     id: 'green_onion',
     name: '대파',
     category: '채소',
-    photoUrl: 'https://loremflickr.com/320/240/green-onion?lock=12',
+    photoUrl: 'assets/images/ingredients/green-onion.jpg',
   ),
   IngredientOption(
     id: 'garlic',
     name: '마늘',
     category: '채소',
-    photoUrl: 'https://loremflickr.com/320/240/garlic?lock=13',
+    photoUrl: 'assets/images/ingredients/garlic.jpg',
   ),
   IngredientOption(
     id: 'potato',
     name: '감자',
     category: '채소',
-    photoUrl: 'https://loremflickr.com/320/240/potato?lock=14',
+    photoUrl: 'assets/images/ingredients/potato.jpg',
   ),
   IngredientOption(
     id: 'zucchini',
     name: '애호박',
     category: '채소',
-    photoUrl: 'https://loremflickr.com/320/240/zucchini?lock=15',
+    photoUrl: 'assets/images/ingredients/zucchini.jpg',
   ),
   IngredientOption(
     id: 'cabbage',
     name: '양배추',
     category: '채소',
-    photoUrl: 'https://loremflickr.com/320/240/cabbage?lock=16',
+    photoUrl: 'assets/images/ingredients/cabbage.jpg',
   ),
   IngredientOption(
     id: 'kimchi',
     name: '김치',
     category: '가공식품',
-    photoUrl: 'https://loremflickr.com/320/240/kimchi?lock=17',
+    photoUrl: 'assets/images/ingredients/kimchi.jpg',
   ),
   IngredientOption(
     id: 'egg',
     name: '계란',
     category: '유제품',
-    photoUrl: 'https://loremflickr.com/320/240/egg?lock=18',
+    photoUrl: 'assets/images/ingredients/egg.jpg',
   ),
   IngredientOption(
     id: 'tofu',
     name: '두부',
     category: '유제품',
-    photoUrl: 'https://loremflickr.com/320/240/tofu?lock=19',
+    photoUrl: 'assets/images/ingredients/tofu.jpg',
   ),
   IngredientOption(
     id: 'milk',
     name: '우유',
     category: '유제품',
-    photoUrl: 'https://loremflickr.com/320/240/milk?lock=20',
+    photoUrl: 'assets/images/ingredients/milk.jpg',
   ),
   IngredientOption(
     id: 'pork',
     name: '돼지고기',
     category: '육류',
-    photoUrl: 'https://loremflickr.com/320/240/pork?lock=21',
+    photoUrl: 'assets/images/ingredients/pork.jpg',
   ),
   IngredientOption(
     id: 'beef',
     name: '소고기',
     category: '육류',
-    photoUrl: 'https://loremflickr.com/320/240/beef?lock=22',
+    photoUrl: 'assets/images/ingredients/beef.jpg',
   ),
   IngredientOption(
     id: 'chicken',
     name: '닭고기',
     category: '육류',
-    photoUrl: 'https://loremflickr.com/320/240/chicken?lock=23',
+    photoUrl: 'assets/images/ingredients/chicken.jpg',
   ),
   IngredientOption(
     id: 'spam',
     name: '스팸',
     category: '가공식품',
-    photoUrl: 'https://loremflickr.com/320/240/ham?lock=24',
+    photoUrl: 'assets/images/ingredients/spam.jpg',
   ),
   IngredientOption(
     id: 'soy_sauce',
     name: '간장',
     category: '양념',
-    photoUrl: 'https://loremflickr.com/320/240/soy-sauce?lock=25',
+    photoUrl: 'assets/images/ingredients/soy-sauce.jpg',
   ),
   IngredientOption(
     id: 'gochujang',
     name: '고추장',
     category: '양념',
-    photoUrl: 'https://loremflickr.com/320/240/gochujang?lock=26',
+    photoUrl: 'assets/images/ingredients/gochujang.jpg',
   ),
   IngredientOption(
     id: 'gochugaru',
     name: '고춧가루',
     category: '양념',
-    photoUrl: 'https://loremflickr.com/320/240/chili-powder?lock=27',
+    photoUrl: 'assets/images/ingredients/gochugaru.jpg',
   ),
   IngredientOption(
     id: 'sesame_oil',
     name: '참기름',
     category: '양념',
-    photoUrl: 'https://loremflickr.com/320/240/sesame-oil?lock=28',
+    photoUrl: 'assets/images/ingredients/sesame-oil.jpg',
   ),
   IngredientOption(
     id: 'sugar',
     name: '설탕',
     category: '양념',
-    photoUrl: 'https://loremflickr.com/320/240/sugar?lock=29',
+    photoUrl: 'assets/images/ingredients/sugar.jpg',
   ),
   IngredientOption(
     id: 'fish_cake',
     name: '어묵',
     category: '가공식품',
-    photoUrl: 'https://loremflickr.com/320/240/fish-cake?lock=30',
+    photoUrl: 'assets/images/ingredients/fish-cake.jpg',
   ),
   IngredientOption(
     id: 'cucumber',
     name: '오이',
     category: '채소',
-    photoUrl: 'https://loremflickr.com/320/240/cucumber?lock=31',
+    photoUrl: 'assets/images/ingredients/cucumber.jpg',
   ),
   IngredientOption(
     id: 'mushroom',
     name: '버섯',
     category: '채소',
-    photoUrl: 'https://loremflickr.com/320/240/mushroom?lock=32',
+    photoUrl: 'assets/images/ingredients/mushroom.jpg',
   ),
   IngredientOption(
     id: 'radish',
     name: '무',
     category: '채소',
-    photoUrl: 'https://loremflickr.com/320/240/white-radish?lock=33',
+    photoUrl: 'assets/images/ingredients/radish.jpg',
   ),
   IngredientOption(
     id: 'carrot',
     name: '당근',
     category: '채소',
-    photoUrl: 'https://loremflickr.com/320/240/carrot?lock=34',
+    photoUrl: 'assets/images/ingredients/carrot.jpg',
   ),
   IngredientOption(
     id: 'rice',
     name: '밥',
     category: '곡물/면',
-    photoUrl: 'https://loremflickr.com/320/240/rice?lock=35',
+    photoUrl: 'assets/images/ingredients/rice.jpg',
   ),
 ];
 
@@ -1172,7 +1414,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '묵은지와 돼지고기를 넣어 진한 국물 맛을 내는 대표 집밥 메뉴입니다.',
     source: '백종원/만개의레시피',
     sourceUrl: 'https://www.10000recipe.com/recipe/6835685',
-    photoUrl: photoUrl('kimchi-jjigae', 101),
+    photoUrl: 'assets/images/recipes/kimchi-jjigae.jpg',
     ingredientIds: [
       'kimchi',
       'pork',
@@ -1188,7 +1430,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '양파와 대파를 듬뿍 넣어 매콤달콤하게 볶는 밥도둑 메뉴입니다.',
     source: '백종원/만개의레시피',
     sourceUrl: 'https://www.10000recipe.com/recipe/6841008',
-    photoUrl: photoUrl('jeyuk-bokkeum', 102),
+    photoUrl: 'assets/images/recipes/jeyuk-bokkeum.jpg',
     ingredientIds: [
       'pork',
       'onion',
@@ -1205,7 +1447,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '짭짤한 간장 양념으로 빠르게 만들 수 있는 국민 반찬입니다.',
     source: '백종원/만개의레시피',
     sourceUrl: 'https://www.10000recipe.com/recipe/6903394',
-    photoUrl: photoUrl('fish-cake-stir-fry', 103),
+    photoUrl: 'assets/images/recipes/fish-cake-stir-fry.jpg',
     ingredientIds: [
       'fish_cake',
       'onion',
@@ -1221,7 +1463,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '새콤달콤한 양념으로 입맛을 살려주는 초간단 반찬입니다.',
     source: '백종원/만개의레시피',
     sourceUrl: 'https://www.10000recipe.com/recipe/6897261',
-    photoUrl: photoUrl('korean-cucumber-salad', 104),
+    photoUrl: 'assets/images/recipes/cucumber-salad.jpg',
     ingredientIds: [
       'cucumber',
       'onion',
@@ -1237,7 +1479,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '감자와 스팸으로 만드는 얼큰한 자작찌개 스타일 메뉴입니다.',
     source: '백종원/만개의레시피',
     sourceUrl: 'https://www.10000recipe.com/recipe/6891652',
-    photoUrl: photoUrl('potato-spam-stew', 105),
+    photoUrl: 'assets/images/recipes/gamja-jjageuli.jpg',
     ingredientIds: [
       'potato',
       'spam',
@@ -1253,7 +1495,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '두부를 간장 베이스로 조려 밥 위에 올리는 간단 한그릇 요리입니다.',
     source: '만개의레시피',
     sourceUrl: 'https://www.10000recipe.com/',
-    photoUrl: photoUrl('tofu-rice-bowl', 106),
+    photoUrl: 'assets/images/recipes/soy-sauce-tofu-rice.jpg',
     ingredientIds: ['tofu', 'soy_sauce', 'garlic', 'green_onion', 'rice'],
   ),
   RecipeData(
@@ -1262,7 +1504,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '계란과 간장만 있어도 빠르게 만들 수 있는 자취생 필수 메뉴입니다.',
     source: '만개의레시피',
     sourceUrl: 'https://www.10000recipe.com/',
-    photoUrl: photoUrl('egg-rice', 107),
+    photoUrl: 'assets/images/recipes/egg-rice.jpg',
     ingredientIds: ['egg', 'soy_sauce', 'sesame_oil', 'rice'],
   ),
   RecipeData(
@@ -1271,7 +1513,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '된장과 고추장을 살짝 섞어 깊은 맛을 내는 변형 라면 레시피입니다.',
     source: '만개의레시피',
     sourceUrl: 'https://www.10000recipe.com/',
-    photoUrl: photoUrl('korean-ramen', 108),
+    photoUrl: 'assets/images/recipes/doenjang-ramen.jpg',
     ingredientIds: ['gochujang', 'soy_sauce', 'green_onion', 'egg'],
   ),
   RecipeData(
@@ -1280,7 +1522,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '소고기와 무로 끓여 담백하면서도 깊은 맛이 나는 국 요리입니다.',
     source: '백종원/만개의레시피',
     sourceUrl: 'https://www.10000recipe.com/recipe/6897772',
-    photoUrl: photoUrl('beef-radish-soup', 109),
+    photoUrl: 'assets/images/recipes/beef-radish-soup.jpg',
     ingredientIds: ['beef', 'radish', 'green_onion', 'garlic', 'soy_sauce'],
   ),
   RecipeData(
@@ -1289,7 +1531,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '계란에 채소를 넣어 부드럽게 말아낸 도시락 인기 반찬입니다.',
     source: '만개의레시피',
     sourceUrl: 'https://www.10000recipe.com/',
-    photoUrl: photoUrl('korean-egg-roll', 110),
+    photoUrl: 'assets/images/recipes/egg-roll.jpg',
     ingredientIds: ['egg', 'onion', 'green_onion', 'carrot'],
   ),
 ];
