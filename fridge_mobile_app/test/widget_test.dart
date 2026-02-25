@@ -8,8 +8,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('냉장고를 부탁해'), findsWidgets);
+    expect(find.text('홈'), findsOneWidget);
     expect(find.text('냉장고'), findsOneWidget);
-    expect(find.text('레시피'), findsOneWidget);
-    expect(find.text('북마크'), findsOneWidget);
+    expect(find.text('추천'), findsOneWidget);
+    expect(find.text('장보기'), findsOneWidget);
+    expect(find.text('설정'), findsOneWidget);
   });
 }

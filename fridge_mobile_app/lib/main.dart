@@ -41,8 +41,21 @@ class FridgeHomePage extends StatefulWidget {
 class _FridgeHomePageState extends State<FridgeHomePage> {
   int _tabIndex = 0;
   bool _recipeReadyOnly = false;
+  bool _bookmarkedOnly = false;
+  MeasureMode _measureMode = MeasureMode.simple;
   final List<PantryEntry> _pantryEntries = [];
+  final List<ShoppingEntry> _shoppingEntries = [];
   final Set<String> _bookmarkedRecipeIds = <String>{};
+  final Set<String> _essentialIngredientIds = <String>{
+    'egg',
+    'milk',
+    'green_onion',
+  };
+  final TextEditingController _shoppingSearchController =
+      TextEditingController();
+  final TextEditingController _newShoppingController = TextEditingController();
+  String _shoppingSearch = '';
+  String _newShoppingName = '';
 
   Set<String> get _ownedIngredientIds =>
       _pantryEntries.map((entry) => entry.ingredient.id).toSet();
@@ -57,18 +70,67 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
   }
 
   List<RecipeMatch> get _visibleRecipeMatches {
-    final base = _recipeMatches;
+    var filtered = _recipeMatches;
 
-    if (!_recipeReadyOnly) {
-      return base;
+    if (_recipeReadyOnly) {
+      filtered = filtered.where((match) => match.missingCount == 0).toList();
     }
 
-    return base.where((match) => match.missingCount == 0).toList();
+    if (_bookmarkedOnly) {
+      filtered = filtered
+          .where((match) => _bookmarkedRecipeIds.contains(match.recipe.id))
+          .toList();
+    }
+
+    return filtered;
   }
 
   List<RecipeData> get _bookmarkedRecipes {
     return recipeCatalog
         .where((recipe) => _bookmarkedRecipeIds.contains(recipe.id))
+        .toList();
+  }
+
+  List<PantryEntry> get _urgentPantryEntries => _pantryEntries.where((entry) {
+    final diff = calculateDayDiff(entry.expiryDate);
+    return diff <= 3;
+  }).toList();
+
+  List<ShoppingEntry> get _uncheckedShoppingEntries =>
+      _shoppingEntries.where((entry) => !entry.checked).toList();
+
+  List<ShoppingEntry> get _checkedShoppingEntries =>
+      _shoppingEntries.where((entry) => entry.checked).toList();
+
+  List<ShoppingEntry> get _visibleUncheckedShopping {
+    final query = _shoppingSearch.trim().toLowerCase();
+    if (query.isEmpty) {
+      return _uncheckedShoppingEntries;
+    }
+
+    return _uncheckedShoppingEntries.where((entry) {
+      final haystack = '${entry.name} ${entry.reason} ${entry.recipeName ?? ''}'
+          .toLowerCase();
+      return haystack.contains(query);
+    }).toList();
+  }
+
+  List<ShoppingEntry> get _visibleCheckedShopping {
+    final query = _shoppingSearch.trim().toLowerCase();
+    if (query.isEmpty) {
+      return _checkedShoppingEntries;
+    }
+
+    return _checkedShoppingEntries
+        .where((entry) => entry.name.toLowerCase().contains(query))
+        .toList();
+  }
+
+  List<IngredientOption> get _missingEssentialIngredients {
+    return _essentialIngredientIds
+        .where((ingredientId) => !_ownedIngredientIds.contains(ingredientId))
+        .map((ingredientId) => ingredientById[ingredientId])
+        .whereType<IngredientOption>()
         .toList();
   }
 
@@ -80,6 +142,23 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
         _bookmarkedRecipeIds.add(recipeId);
       }
     });
+  }
+
+  void _toggleEssentialIngredient(String ingredientId) {
+    setState(() {
+      if (_essentialIngredientIds.contains(ingredientId)) {
+        _essentialIngredientIds.remove(ingredientId);
+      } else {
+        _essentialIngredientIds.add(ingredientId);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _shoppingSearchController.dispose();
+    _newShoppingController.dispose();
+    super.dispose();
   }
 
   void _upsertPantryEntry(PantryEntry entry) {
@@ -102,6 +181,197 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
     setState(() {
       _pantryEntries.removeWhere((entry) => entry.id == entryId);
     });
+  }
+
+  int _addShoppingEntries(
+    List<IngredientOption> ingredients, {
+    required String reason,
+    String? recipeName,
+  }) {
+    var addedCount = 0;
+
+    setState(() {
+      for (final ingredient in ingredients) {
+        final exists = _shoppingEntries.any(
+          (entry) => entry.name == ingredient.name && !entry.checked,
+        );
+
+        if (exists) {
+          continue;
+        }
+
+        _shoppingEntries.add(
+          ShoppingEntry(
+            id: createLocalId(),
+            name: ingredient.name,
+            reason: reason,
+            recipeName: recipeName,
+            ingredientId: ingredient.id,
+            checked: false,
+          ),
+        );
+        addedCount += 1;
+      }
+    });
+
+    return addedCount;
+  }
+
+  void _addMissingIngredientsToShopping(RecipeMatch match) {
+    final missingIngredients = match.recipe.ingredientIds
+        .where((ingredientId) => !_ownedIngredientIds.contains(ingredientId))
+        .map((ingredientId) => ingredientById[ingredientId])
+        .whereType<IngredientOption>()
+        .toList();
+
+    if (missingIngredients.isEmpty) {
+      _showToast('이미 모든 재료를 보유하고 있습니다.');
+      return;
+    }
+
+    final addedCount = _addShoppingEntries(
+      missingIngredients,
+      reason: '레시피 부족 재료',
+      recipeName: match.recipe.name,
+    );
+
+    if (addedCount == 0) {
+      _showToast('이미 장보기 목록에 있는 재료입니다.');
+      return;
+    }
+
+    _showToast('"${match.recipe.name}" 부족 재료 $addedCount개를 담았습니다.');
+  }
+
+  void _addMissingEssentialToShopping() {
+    final addedCount = _addShoppingEntries(
+      _missingEssentialIngredients,
+      reason: '필수 재료 부족',
+    );
+
+    if (addedCount == 0) {
+      _showToast('필수 재료가 이미 장보기 목록에 있습니다.');
+      return;
+    }
+
+    _showToast('필수 재료 $addedCount개를 장보기에 추가했습니다.');
+  }
+
+  void _addManualShoppingItem() {
+    final normalized = _newShoppingName.trim();
+
+    if (normalized.isEmpty) {
+      return;
+    }
+
+    IngredientOption? ingredient;
+    for (final item in ingredientOptions) {
+      if (item.name == normalized) {
+        ingredient = item;
+        break;
+      }
+    }
+
+    final exists = _shoppingEntries.any(
+      (entry) => entry.name == normalized && !entry.checked,
+    );
+
+    if (exists) {
+      _showToast('이미 장보기 목록에 있습니다.');
+      return;
+    }
+
+    setState(() {
+      _shoppingEntries.add(
+        ShoppingEntry(
+          id: createLocalId(),
+          name: normalized,
+          reason: '직접 추가',
+          ingredientId: ingredient?.id,
+          checked: false,
+        ),
+      );
+      _newShoppingName = '';
+      _newShoppingController.clear();
+    });
+  }
+
+  void _toggleShoppingEntry(String entryId) {
+    setState(() {
+      final index = _shoppingEntries.indexWhere((entry) => entry.id == entryId);
+      if (index == -1) {
+        return;
+      }
+
+      final current = _shoppingEntries[index];
+      _shoppingEntries[index] = current.copyWith(checked: !current.checked);
+    });
+  }
+
+  void _removeShoppingEntry(String entryId) {
+    setState(() {
+      _shoppingEntries.removeWhere((entry) => entry.id == entryId);
+    });
+  }
+
+  void _removeCheckedShopping() {
+    setState(() {
+      _shoppingEntries.removeWhere((entry) => entry.checked);
+    });
+  }
+
+  void _moveCheckedShoppingToPantry() {
+    final checked = _shoppingEntries.where((entry) => entry.checked).toList();
+    if (checked.isEmpty) {
+      return;
+    }
+
+    setState(() {
+      final today = DateTime.now();
+
+      for (final entry in checked) {
+        final ingredientId = entry.ingredientId;
+        if (ingredientId == null) {
+          continue;
+        }
+
+        final ingredient = ingredientById[ingredientId];
+        if (ingredient == null) {
+          continue;
+        }
+
+        final alreadyOwned = _pantryEntries.any(
+          (pantryEntry) => pantryEntry.ingredient.id == ingredientId,
+        );
+        if (alreadyOwned) {
+          continue;
+        }
+
+        _pantryEntries.add(
+          PantryEntry(
+            id: createLocalId(),
+            ingredient: ingredient,
+            addedDate: DateTime(today.year, today.month, today.day),
+            expiryDate: DateTime(today.year, today.month, today.day + 7),
+          ),
+        );
+      }
+
+      _pantryEntries.sort((a, b) => a.expiryDate.compareTo(b.expiryDate));
+      _shoppingEntries.removeWhere((entry) => entry.checked);
+    });
+
+    _showToast('체크된 장보기 항목을 냉장고에 반영했습니다.');
+  }
+
+  void _showToast(String message) {
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _openAddEntrySheet() async {
@@ -145,6 +415,157 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
     _upsertPantryEntry(edited);
   }
 
+  Widget _buildOverviewTab() {
+    final readyRecipeCount = _recipeMatches
+        .where((recipe) => recipe.missingCount == 0)
+        .length;
+    final urgentEntries = _urgentPantryEntries.take(3).toList();
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
+      children: [
+        _TopSummaryCard(
+          pantryCount: _pantryEntries.length,
+          recipeReadyCount: readyRecipeCount,
+          shoppingCount: _uncheckedShoppingEntries.length,
+          bookmarkCount: _bookmarkedRecipes.length,
+        ),
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: () => setState(() => _tabIndex = 1),
+                icon: const Icon(Icons.kitchen),
+                label: const Text('냉장고 관리'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: FilledButton.tonalIcon(
+                onPressed: () => setState(() => _tabIndex = 2),
+                icon: const Icon(Icons.restaurant_menu),
+                label: const Text('추천 보기'),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.tonalIcon(
+            onPressed: () => setState(() => _tabIndex = 3),
+            icon: const Icon(Icons.shopping_basket),
+            label: const Text('장보기 열기'),
+          ),
+        ),
+        const SizedBox(height: 18),
+        if (_pantryEntries.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFFE9ECF2)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '냉장고가 비어 있어요',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  '재료를 먼저 추가하면 추천 정확도와 북마크 활용도가 바로 올라갑니다.',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Color(0xFF6B7280),
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                FilledButton.icon(
+                  onPressed: () async {
+                    setState(() => _tabIndex = 1);
+                    await _openAddEntrySheet();
+                  },
+                  icon: const Icon(Icons.add),
+                  label: const Text('첫 재료 추가하기'),
+                ),
+              ],
+            ),
+          ),
+        if (_missingEssentialIngredients.isNotEmpty) ...[
+          Container(
+            margin: const EdgeInsets.only(top: 12),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF0F9FF),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFCFE7FF)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '필수 재료가 부족해요',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF0C4A6E),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  _missingEssentialIngredients
+                      .map((ingredient) => ingredient.name)
+                      .join(', '),
+                  style: const TextStyle(color: Color(0xFF0369A1)),
+                ),
+                const SizedBox(height: 10),
+                FilledButton.tonal(
+                  onPressed: () {
+                    _addMissingEssentialToShopping();
+                    setState(() => _tabIndex = 3);
+                  },
+                  child: const Text('장보기에 한 번에 담기'),
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (urgentEntries.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          const Text(
+            '유통기한 임박',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 8),
+          for (final entry in urgentEntries)
+            Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.asset(
+                    entry.ingredient.photoUrl,
+                    width: 44,
+                    height: 44,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+                title: Text(entry.ingredient.name),
+                subtitle: Text('소비기한 ${formatKoreanDate(entry.expiryDate)}'),
+                trailing: _DDayBadge(
+                  daysLeft: calculateDayDiff(entry.expiryDate),
+                ),
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+
   Widget _buildHomeTab() {
     if (_pantryEntries.isEmpty) {
       return ListView(
@@ -155,6 +576,8 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
             recipeReadyCount: _recipeMatches
                 .where((recipe) => recipe.missingCount == 0)
                 .length,
+            shoppingCount: _uncheckedShoppingEntries.length,
+            bookmarkCount: _bookmarkedRecipes.length,
           ),
           const SizedBox(height: 16),
           Container(
@@ -211,6 +634,8 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
           recipeReadyCount: _recipeMatches
               .where((recipe) => recipe.missingCount == 0)
               .length,
+          shoppingCount: _uncheckedShoppingEntries.length,
+          bookmarkCount: _bookmarkedRecipes.length,
         ),
         const SizedBox(height: 20),
         for (final category in categories) ...[
@@ -253,20 +678,30 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
       children: [
-        Row(
+        const Text(
+          '추천 레시피',
+          style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
           children: [
-            const Expanded(
-              child: Text(
-                '추천 레시피',
-                style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
-              ),
-            ),
             FilterChip(
               selected: _recipeReadyOnly,
               label: const Text('지금 바로 가능'),
               onSelected: (value) {
                 setState(() {
                   _recipeReadyOnly = value;
+                });
+              },
+            ),
+            FilterChip(
+              selected: _bookmarkedOnly,
+              label: const Text('북마크만'),
+              onSelected: (value) {
+                setState(() {
+                  _bookmarkedOnly = value;
                 });
               },
             ),
@@ -278,49 +713,259 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
           style: const TextStyle(color: Color(0xFF6B7280)),
         ),
         const SizedBox(height: 14),
+        if (visibleMatches.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFE5E7EB)),
+            ),
+            child: const Text(
+              '조건에 맞는 레시피가 없습니다.\n필터를 해제하거나 냉장고 재료를 추가해 주세요.',
+              style: TextStyle(height: 1.4, color: Color(0xFF4B5563)),
+            ),
+          ),
         for (final match in visibleMatches)
           RecipeCard(
             match: match,
             bookmarked: _bookmarkedRecipeIds.contains(match.recipe.id),
             ownedIngredientIds: _ownedIngredientIds,
             onToggleBookmark: () => _toggleBookmark(match.recipe.id),
+            onAddMissingToShopping: () =>
+                _addMissingIngredientsToShopping(match),
+          ),
+        if (!_bookmarkedOnly && _bookmarkedRecipes.isNotEmpty) ...[
+          const SizedBox(height: 18),
+          const Text(
+            '북마크 모아보기',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 8),
+          for (final recipe in _bookmarkedRecipes.take(3))
+            BookmarkCard(
+              recipe: recipe,
+              ownedIngredientIds: _ownedIngredientIds,
+              onRemove: () => _toggleBookmark(recipe.id),
+            ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildShoppingTab() {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
+      children: [
+        const Text(
+          '장보기',
+          style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '필요한 재료 ${_uncheckedShoppingEntries.length}개',
+          style: const TextStyle(color: Color(0xFF6B7280)),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _shoppingSearchController,
+                onChanged: (value) => setState(() => _shoppingSearch = value),
+                decoration: const InputDecoration(
+                  hintText: '장보기 검색',
+                  prefixIcon: Icon(Icons.search),
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _newShoppingController,
+                onChanged: (value) => setState(() => _newShoppingName = value),
+                onSubmitted: (_) => _addManualShoppingItem(),
+                decoration: const InputDecoration(
+                  hintText: '직접 항목 추가',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            FilledButton(
+              onPressed: _addManualShoppingItem,
+              child: const Icon(Icons.add),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            TextButton.icon(
+              onPressed: _checkedShoppingEntries.isEmpty
+                  ? null
+                  : _moveCheckedShoppingToPantry,
+              icon: const Icon(Icons.kitchen),
+              label: const Text('체크 항목 냉장고 반영'),
+            ),
+            const SizedBox(width: 4),
+            TextButton(
+              onPressed: _checkedShoppingEntries.isEmpty
+                  ? null
+                  : _removeCheckedShopping,
+              child: const Text('완료 항목 비우기'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (_visibleUncheckedShopping.isNotEmpty) ...[
+          const Text(
+            '사야 할 것',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 8),
+          for (final entry in _visibleUncheckedShopping)
+            Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: Checkbox(
+                  value: entry.checked,
+                  onChanged: (_) => _toggleShoppingEntry(entry.id),
+                ),
+                title: Text(
+                  entry.name,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                subtitle: Text(
+                  '${entry.reason}${entry.recipeName == null ? '' : ' · ${entry.recipeName}'}',
+                ),
+                trailing: IconButton(
+                  onPressed: () => _removeShoppingEntry(entry.id),
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              ),
+            ),
+        ],
+        if (_visibleCheckedShopping.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          const Text(
+            '완료됨',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 6),
+          for (final entry in _visibleCheckedShopping)
+            Card(
+              color: const Color(0xFFF8FAFC),
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: Checkbox(
+                  value: entry.checked,
+                  onChanged: (_) => _toggleShoppingEntry(entry.id),
+                ),
+                title: Text(
+                  entry.name,
+                  style: const TextStyle(
+                    decoration: TextDecoration.lineThrough,
+                    color: Color(0xFF6B7280),
+                  ),
+                ),
+              ),
+            ),
+        ],
+        if (_shoppingEntries.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFE5E7EB)),
+            ),
+            child: const Text(
+              '장보기 목록이 비어 있어요.\n추천 탭에서 부족 재료를 담아보세요.',
+              style: TextStyle(height: 1.4, color: Color(0xFF4B5563)),
+            ),
           ),
       ],
     );
   }
 
-  Widget _buildBookmarkTab() {
-    if (_bookmarkedRecipes.isEmpty) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text(
-            '북마크한 레시피가 아직 없어요.\n레시피 탭에서 ★ 버튼을 눌러 저장해보세요.',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 16,
-              color: Color(0xFF6B7280),
-              height: 1.4,
-            ),
-          ),
-        ),
-      );
-    }
+  Widget _buildSettingsTab() {
+    final essentialCandidates = ingredientOptions
+        .where((ingredient) => ingredient.category != '양념')
+        .take(14)
+        .toList();
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
       children: [
         const Text(
-          '북마크',
+          '설정',
           style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
         ),
-        const SizedBox(height: 12),
-        for (final recipe in _bookmarkedRecipes)
-          BookmarkCard(
-            recipe: recipe,
-            ownedIngredientIds: _ownedIngredientIds,
-            onRemove: () => _toggleBookmark(recipe.id),
-          ),
+        const SizedBox(height: 14),
+        const Text(
+          '레시피 계량 단위',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 8),
+        SegmentedButton<MeasureMode>(
+          segments: const <ButtonSegment<MeasureMode>>[
+            ButtonSegment(
+              value: MeasureMode.simple,
+              label: Text('간편(숟가락)'),
+              icon: Icon(Icons.soup_kitchen),
+            ),
+            ButtonSegment(
+              value: MeasureMode.precise,
+              label: Text('정밀(ml/g)'),
+              icon: Icon(Icons.straighten),
+            ),
+          ],
+          selected: <MeasureMode>{_measureMode},
+          onSelectionChanged: (selection) {
+            if (selection.isEmpty) {
+              return;
+            }
+
+            setState(() {
+              _measureMode = selection.first;
+            });
+          },
+        ),
+        const SizedBox(height: 16),
+        const Text(
+          '항상 필요한 필수 재료',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: essentialCandidates.map((ingredient) {
+            final selected = _essentialIngredientIds.contains(ingredient.id);
+            return FilterChip(
+              selected: selected,
+              label: Text(ingredient.name),
+              onSelected: (_) => _toggleEssentialIngredient(ingredient.id),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 14),
+        FilledButton.tonalIcon(
+          onPressed: _missingEssentialIngredients.isEmpty
+              ? null
+              : () {
+                  _addMissingEssentialToShopping();
+                  setState(() => _tabIndex = 3);
+                },
+          icon: const Icon(Icons.shopping_basket),
+          label: const Text('부족 필수 재료 장보기에 담기'),
+        ),
       ],
     );
   }
@@ -328,15 +973,17 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
   @override
   Widget build(BuildContext context) {
     final tabs = <Widget>[
+      _buildOverviewTab(),
       _buildHomeTab(),
       _buildRecipeTab(),
-      _buildBookmarkTab(),
+      _buildShoppingTab(),
+      _buildSettingsTab(),
     ];
 
     return Scaffold(
       appBar: AppBar(title: const Text('냉장고를 부탁해'), centerTitle: false),
       body: IndexedStack(index: _tabIndex, children: tabs),
-      floatingActionButton: _tabIndex == 0
+      floatingActionButton: _tabIndex == 1
           ? FloatingActionButton.extended(
               onPressed: _openAddEntrySheet,
               icon: const Icon(Icons.add),
@@ -351,9 +998,14 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
           });
         },
         destinations: const [
+          NavigationDestination(icon: Icon(Icons.home_outlined), label: '홈'),
           NavigationDestination(icon: Icon(Icons.kitchen), label: '냉장고'),
-          NavigationDestination(icon: Icon(Icons.menu_book), label: '레시피'),
-          NavigationDestination(icon: Icon(Icons.bookmark), label: '북마크'),
+          NavigationDestination(icon: Icon(Icons.menu_book), label: '추천'),
+          NavigationDestination(icon: Icon(Icons.shopping_cart), label: '장보기'),
+          NavigationDestination(
+            icon: Icon(Icons.settings_outlined),
+            label: '설정',
+          ),
         ],
       ),
     );
@@ -364,10 +1016,14 @@ class _TopSummaryCard extends StatelessWidget {
   const _TopSummaryCard({
     required this.pantryCount,
     required this.recipeReadyCount,
+    required this.shoppingCount,
+    required this.bookmarkCount,
   });
 
   final int pantryCount;
   final int recipeReadyCount;
+  final int shoppingCount;
+  final int bookmarkCount;
 
   @override
   Widget build(BuildContext context) {
@@ -398,11 +1054,19 @@ class _TopSummaryCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  '재료 $pantryCount개 · 바로 가능한 레시피 $recipeReadyCount개',
+                  '재료 $pantryCount개 · 바로 가능 $recipeReadyCount개',
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 16,
                     fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '장보기 $shoppingCount개 · 북마크 $bookmarkCount개',
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
@@ -556,16 +1220,19 @@ class RecipeCard extends StatelessWidget {
     required this.bookmarked,
     required this.ownedIngredientIds,
     required this.onToggleBookmark,
+    required this.onAddMissingToShopping,
   });
 
   final RecipeMatch match;
   final bool bookmarked;
   final Set<String> ownedIngredientIds;
   final VoidCallback onToggleBookmark;
+  final VoidCallback onAddMissingToShopping;
 
   @override
   Widget build(BuildContext context) {
     final recipe = match.recipe;
+    final missingCount = match.missingCount;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -625,6 +1292,45 @@ class RecipeCard extends StatelessWidget {
               recipe.summary,
               style: const TextStyle(color: Color(0xFF4B5563), height: 1.4),
             ),
+            const SizedBox(height: 10),
+            if (missingCount == 0)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 9,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFECFDF3),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFF86EFAC)),
+                ),
+                child: const Text(
+                  '지금 바로 만들 수 있어요',
+                  style: TextStyle(
+                    color: Color(0xFF166534),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              )
+            else
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '부족 재료 $missingCount개',
+                      style: const TextStyle(
+                        color: Color(0xFFB45309),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  FilledButton.tonal(
+                    onPressed: onAddMissingToShopping,
+                    child: const Text('장보기에 담기'),
+                  ),
+                ],
+              ),
             const SizedBox(height: 10),
             Wrap(
               spacing: 8,
@@ -1179,15 +1885,51 @@ Map<String, List<IngredientOption>> buildGroupedIngredients({
 
 List<String> sortIngredientCategories(Iterable<String> categories) {
   final values = categories.toSet();
-  final others = values
-      .where((category) => !ingredientCategoryOrder.contains(category))
-      .toList()
-    ..sort((a, b) => a.compareTo(b));
+  final others =
+      values
+          .where((category) => !ingredientCategoryOrder.contains(category))
+          .toList()
+        ..sort((a, b) => a.compareTo(b));
 
-  return <String>[
-    ...ingredientCategoryOrder.where(values.contains),
-    ...others,
-  ];
+  return <String>[...ingredientCategoryOrder.where(values.contains), ...others];
+}
+
+enum MeasureMode { simple, precise }
+
+class ShoppingEntry {
+  const ShoppingEntry({
+    required this.id,
+    required this.name,
+    required this.reason,
+    this.recipeName,
+    this.ingredientId,
+    required this.checked,
+  });
+
+  final String id;
+  final String name;
+  final String reason;
+  final String? recipeName;
+  final String? ingredientId;
+  final bool checked;
+
+  ShoppingEntry copyWith({
+    String? id,
+    String? name,
+    String? reason,
+    String? recipeName,
+    String? ingredientId,
+    bool? checked,
+  }) {
+    return ShoppingEntry(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      reason: reason ?? this.reason,
+      recipeName: recipeName ?? this.recipeName,
+      ingredientId: ingredientId ?? this.ingredientId,
+      checked: checked ?? this.checked,
+    );
+  }
 }
 
 class IngredientOption {
