@@ -1,7 +1,14 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'bootstrap/app_bootstrap.dart';
+import 'config/app_env.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -14,16 +21,88 @@ class FridgeMasterApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme =
+        ColorScheme.fromSeed(
+          seedColor: const Color(0xFF0891B2),
+          brightness: Brightness.light,
+        ).copyWith(
+          primary: const Color(0xFF0891B2),
+          secondary: const Color(0xFF22D3EE),
+          surface: Colors.white,
+        );
+
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: '냉장고를 부탁해',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFFF8A00)),
+        colorScheme: colorScheme,
         scaffoldBackgroundColor: const Color(0xFFF8F9FB),
         useMaterial3: true,
         textTheme: const TextTheme(
           headlineSmall: TextStyle(fontWeight: FontWeight.w800),
           titleMedium: TextStyle(fontWeight: FontWeight.w700),
+        ),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.white,
+          foregroundColor: Color(0xFF164E63),
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          surfaceTintColor: Colors.transparent,
+          titleTextStyle: TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            color: Color(0xFF164E63),
+          ),
+        ),
+        cardTheme: CardThemeData(
+          color: Colors.white,
+          elevation: 0,
+          margin: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: Color(0xFFE2E8F0)),
+          ),
+        ),
+        navigationBarTheme: NavigationBarThemeData(
+          backgroundColor: Colors.white,
+          indicatorColor: const Color(0xFFCCFBF1),
+          labelTextStyle: WidgetStateProperty.resolveWith<TextStyle>((states) {
+            if (states.contains(WidgetState.selected)) {
+              return const TextStyle(
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF0F766E),
+              );
+            }
+            return const TextStyle(
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF64748B),
+            );
+          }),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: Colors.white,
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Color(0xFF0E7490), width: 1.6),
+          ),
+          hintStyle: const TextStyle(color: Color(0xFF94A3B8)),
+        ),
+        chipTheme: ChipThemeData(
+          backgroundColor: Colors.white,
+          selectedColor: const Color(0xFFCCFBF1),
+          side: const BorderSide(color: Color(0xFFE2E8F0)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          labelStyle: const TextStyle(color: Color(0xFF334155)),
+        ),
+        snackBarTheme: const SnackBarThemeData(
+          behavior: SnackBarBehavior.floating,
         ),
       ),
       home: const FridgeHomePage(),
@@ -39,6 +118,11 @@ class FridgeHomePage extends StatefulWidget {
 }
 
 class _FridgeHomePageState extends State<FridgeHomePage> {
+  static const _localStateVersion = 1;
+  static const _guestStorageUserId = 'guest';
+  static const _localStoragePrefix = 'fridge_mobile_app:v2';
+  static const _cloudTable = 'fridge_app_state';
+
   int _tabIndex = 0;
   bool _recipeReadyOnly = false;
   bool _bookmarkedOnly = false;
@@ -54,8 +138,19 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
   final TextEditingController _shoppingSearchController =
       TextEditingController();
   final TextEditingController _newShoppingController = TextEditingController();
+
+  SharedPreferences? _sharedPreferences;
+  SupabaseClient? _supabaseClient;
+  StreamSubscription<AuthState>? _authSubscription;
+  Session? _session;
+  Timer? _syncDebounce;
+  bool _persistenceReady = false;
+  bool _hydratingState = true;
+  String _persistenceStatus = '초기화 중';
+
   String _shoppingSearch = '';
   String _newShoppingName = '';
+  String _selectedPantryCategory = '전체';
 
   Set<String> get _ownedIngredientIds =>
       _pantryEntries.map((entry) => entry.ingredient.id).toSet();
@@ -134,6 +229,414 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
         .toList();
   }
 
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_initializePersistence());
+  }
+
+  String _localStorageKey([String? userId]) {
+    final scopedUserId = userId ?? _guestStorageUserId;
+    return '$_localStoragePrefix:$scopedUserId:app_state';
+  }
+
+  Map<String, dynamic> _buildPersistedPayload() {
+    return <String, dynamic>{
+      'version': _localStateVersion,
+      'updatedAt': DateTime.now().toIso8601String(),
+      'pantryEntries': _pantryEntries
+          .map(
+            (entry) => <String, dynamic>{
+              'id': entry.id,
+              'ingredientId': entry.ingredient.id,
+              'addedDate': entry.addedDate.toIso8601String(),
+              'expiryDate': entry.expiryDate.toIso8601String(),
+            },
+          )
+          .toList(),
+      'shoppingEntries': _shoppingEntries
+          .map(
+            (entry) => <String, dynamic>{
+              'id': entry.id,
+              'name': entry.name,
+              'reason': entry.reason,
+              'recipeName': entry.recipeName,
+              'ingredientId': entry.ingredientId,
+              'checked': entry.checked,
+            },
+          )
+          .toList(),
+      'bookmarkedRecipeIds': _bookmarkedRecipeIds.toList(),
+      'essentialIngredientIds': _essentialIngredientIds.toList(),
+      'measureMode': _measureMode.name,
+    };
+  }
+
+  Future<void> _initializePersistence() async {
+    try {
+      _sharedPreferences = await SharedPreferences.getInstance();
+      await _loadLocalState();
+      await _initializeSupabaseSync();
+      _persistenceReady = true;
+      _setPersistenceStatus(
+        _session == null ? '로컬 저장 모드' : '로컬 + Supabase 동기화 모드',
+      );
+    } catch (error) {
+      debugPrint('[persistence] init failed: $error');
+      _persistenceReady = true;
+      _setPersistenceStatus('로컬 저장 모드 (초기화 일부 실패)');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _hydratingState = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _initializeSupabaseSync() async {
+    if (!AppEnv.hasSupabase) {
+      _session = null;
+      _setPersistenceStatus('로컬 저장 모드 (Supabase 미설정)');
+      return;
+    }
+
+    try {
+      _supabaseClient = Supabase.instance.client;
+      _session = _supabaseClient!.auth.currentSession;
+
+      if (_session == null) {
+        try {
+          final response = await _supabaseClient!.auth.signInAnonymously();
+          _session = response.session;
+        } catch (error) {
+          debugPrint('[persistence] anonymous sign-in skipped: $error');
+        }
+      }
+
+      if (_session != null) {
+        await _migrateGuestStateToUser(_session!.user.id);
+        await _loadLocalState(userId: _session!.user.id);
+        await _loadCloudState();
+      } else {
+        _setPersistenceStatus('로컬 저장 모드 (Supabase 세션 없음)');
+      }
+
+      _authSubscription = _supabaseClient!.auth.onAuthStateChange.listen((
+        event,
+      ) {
+        unawaited(_handleAuthStateChange(event.session));
+      });
+    } catch (error) {
+      debugPrint('[persistence] supabase sync unavailable: $error');
+      _supabaseClient = null;
+      _session = null;
+      _setPersistenceStatus('로컬 저장 모드 (Supabase 연결 실패)');
+    }
+  }
+
+  Future<void> _handleAuthStateChange(Session? session) async {
+    final previousUserId = _session?.user.id;
+    final nextUserId = session?.user.id;
+    _session = session;
+
+    if (previousUserId == nextUserId) {
+      return;
+    }
+
+    if (nextUserId == null) {
+      await _loadLocalState(userId: null);
+      _setPersistenceStatus('로컬 저장 모드 (로그아웃됨)');
+      return;
+    }
+
+    await _migrateGuestStateToUser(nextUserId);
+    await _loadLocalState(userId: nextUserId);
+    await _loadCloudState();
+  }
+
+  Future<void> _migrateGuestStateToUser(String userId) async {
+    final prefs = _sharedPreferences;
+    if (prefs == null) {
+      return;
+    }
+
+    final guestKey = _localStorageKey(null);
+    final userKey = _localStorageKey(userId);
+    final userExists = prefs.getString(userKey);
+    if (userExists != null) {
+      return;
+    }
+
+    final guestState = prefs.getString(guestKey);
+    if (guestState == null) {
+      return;
+    }
+
+    await prefs.setString(userKey, guestState);
+  }
+
+  Future<void> _loadLocalState({String? userId}) async {
+    final prefs = _sharedPreferences;
+    if (prefs == null) {
+      return;
+    }
+
+    final key = _localStorageKey(userId ?? _session?.user.id);
+    final raw = prefs.getString(key);
+    if (raw == null || raw.isEmpty) {
+      return;
+    }
+
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) {
+        _applyPersistedPayload(decoded);
+      } else if (decoded is Map) {
+        _applyPersistedPayload(Map<String, dynamic>.from(decoded));
+      }
+    } catch (error) {
+      debugPrint('[persistence] local decode failed: $error');
+    }
+  }
+
+  Future<void> _saveLocalState() async {
+    final prefs = _sharedPreferences;
+    if (prefs == null) {
+      return;
+    }
+
+    final key = _localStorageKey(_session?.user.id);
+    final encoded = jsonEncode(_buildPersistedPayload());
+    await prefs.setString(key, encoded);
+  }
+
+  Future<void> _loadCloudState() async {
+    final client = _supabaseClient;
+    final userId = _session?.user.id;
+    if (client == null || userId == null) {
+      return;
+    }
+
+    try {
+      final response = await client
+          .from(_cloudTable)
+          .select('payload')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+      if (response != null) {
+        final payloadRaw = response['payload'];
+        if (payloadRaw is Map) {
+          final payload = Map<String, dynamic>.from(payloadRaw);
+          _applyPersistedPayload(payload);
+          await _saveLocalState();
+        }
+      }
+
+      _setPersistenceStatus('로컬 + Supabase 동기화 모드');
+    } catch (error) {
+      debugPrint('[persistence] cloud load failed: $error');
+      _setPersistenceStatus('로컬 저장 모드 (Cloud 읽기 실패)');
+    }
+  }
+
+  Future<void> _saveCloudState() async {
+    final client = _supabaseClient;
+    final userId = _session?.user.id;
+    if (client == null || userId == null) {
+      return;
+    }
+
+    try {
+      await client.from(_cloudTable).upsert(<String, dynamic>{
+        'user_id': userId,
+        'payload': _buildPersistedPayload(),
+        'updated_at': DateTime.now().toIso8601String(),
+      }, onConflict: 'user_id');
+
+      _setPersistenceStatus('로컬 + Supabase 동기화 모드');
+    } catch (error) {
+      debugPrint('[persistence] cloud save failed: $error');
+      _setPersistenceStatus('로컬 저장 모드 (Cloud 쓰기 실패)');
+    }
+  }
+
+  void _applyPersistedPayload(Map<String, dynamic> payload) {
+    final pantry = <PantryEntry>[];
+    final shopping = <ShoppingEntry>[];
+    final bookmarked = <String>{};
+    final essentials = <String>{};
+    var nextMeasureMode = MeasureMode.simple;
+
+    final pantryRaw = payload['pantryEntries'];
+    if (pantryRaw is List) {
+      for (final row in pantryRaw) {
+        final parsed = _parsePantryEntry(row);
+        if (parsed != null) {
+          pantry.add(parsed);
+        }
+      }
+    }
+
+    final shoppingRaw = payload['shoppingEntries'];
+    if (shoppingRaw is List) {
+      for (final row in shoppingRaw) {
+        final parsed = _parseShoppingEntry(row);
+        if (parsed != null) {
+          shopping.add(parsed);
+        }
+      }
+    }
+
+    final bookmarkRaw = payload['bookmarkedRecipeIds'];
+    if (bookmarkRaw is List) {
+      for (final item in bookmarkRaw) {
+        if (item is String &&
+            recipeCatalog.any((recipe) => recipe.id == item)) {
+          bookmarked.add(item);
+        }
+      }
+    }
+
+    final essentialRaw = payload['essentialIngredientIds'];
+    if (essentialRaw is List) {
+      for (final item in essentialRaw) {
+        if (item is String && ingredientById.containsKey(item)) {
+          essentials.add(item);
+        }
+      }
+    }
+
+    final modeRaw = payload['measureMode'];
+    if (modeRaw is String && modeRaw == MeasureMode.precise.name) {
+      nextMeasureMode = MeasureMode.precise;
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _pantryEntries
+        ..clear()
+        ..addAll(pantry)
+        ..sort((a, b) => a.expiryDate.compareTo(b.expiryDate));
+      _shoppingEntries
+        ..clear()
+        ..addAll(shopping);
+      _bookmarkedRecipeIds
+        ..clear()
+        ..addAll(bookmarked);
+      _essentialIngredientIds
+        ..clear()
+        ..addAll(
+          essentials.isEmpty
+              ? <String>{'egg', 'milk', 'green_onion'}
+              : essentials,
+        );
+      _measureMode = nextMeasureMode;
+    });
+  }
+
+  PantryEntry? _parsePantryEntry(dynamic row) {
+    if (row is! Map) {
+      return null;
+    }
+
+    final map = Map<String, dynamic>.from(row);
+    final ingredientId = map['ingredientId'];
+    if (ingredientId is! String) {
+      return null;
+    }
+
+    final ingredient = ingredientById[ingredientId];
+    if (ingredient == null) {
+      return null;
+    }
+
+    final id = map['id'] is String && (map['id'] as String).isNotEmpty
+        ? map['id'] as String
+        : createLocalId();
+
+    final addedDate = _parseDate(map['addedDate']) ?? DateTime.now();
+    final expiryDate =
+        _parseDate(map['expiryDate']) ??
+        DateTime(addedDate.year, addedDate.month, addedDate.day + 7);
+
+    return PantryEntry(
+      id: id,
+      ingredient: ingredient,
+      addedDate: addedDate,
+      expiryDate: expiryDate,
+    );
+  }
+
+  ShoppingEntry? _parseShoppingEntry(dynamic row) {
+    if (row is! Map) {
+      return null;
+    }
+
+    final map = Map<String, dynamic>.from(row);
+    final name = map['name'];
+    final reason = map['reason'];
+    if (name is! String || name.isEmpty || reason is! String) {
+      return null;
+    }
+
+    final id = map['id'] is String && (map['id'] as String).isNotEmpty
+        ? map['id'] as String
+        : createLocalId();
+
+    return ShoppingEntry(
+      id: id,
+      name: name,
+      reason: reason,
+      recipeName: map['recipeName'] as String?,
+      ingredientId: map['ingredientId'] as String?,
+      checked: map['checked'] == true,
+    );
+  }
+
+  DateTime? _parseDate(dynamic value) {
+    if (value is! String || value.isEmpty) {
+      return null;
+    }
+    return DateTime.tryParse(value);
+  }
+
+  void _schedulePersistenceSync() {
+    if (!_persistenceReady) {
+      return;
+    }
+
+    unawaited(_saveLocalState());
+
+    if (_supabaseClient == null || _session == null) {
+      return;
+    }
+
+    _syncDebounce?.cancel();
+    _syncDebounce = Timer(const Duration(milliseconds: 700), () {
+      unawaited(_saveCloudState());
+    });
+  }
+
+  void _setPersistenceStatus(String nextStatus) {
+    if (_persistenceStatus == nextStatus) {
+      return;
+    }
+
+    if (!mounted) {
+      _persistenceStatus = nextStatus;
+      return;
+    }
+
+    setState(() {
+      _persistenceStatus = nextStatus;
+    });
+  }
+
   void _toggleBookmark(String recipeId) {
     setState(() {
       if (_bookmarkedRecipeIds.contains(recipeId)) {
@@ -142,6 +645,7 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
         _bookmarkedRecipeIds.add(recipeId);
       }
     });
+    _schedulePersistenceSync();
   }
 
   void _toggleEssentialIngredient(String ingredientId) {
@@ -152,10 +656,13 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
         _essentialIngredientIds.add(ingredientId);
       }
     });
+    _schedulePersistenceSync();
   }
 
   @override
   void dispose() {
+    _authSubscription?.cancel();
+    _syncDebounce?.cancel();
     _shoppingSearchController.dispose();
     _newShoppingController.dispose();
     super.dispose();
@@ -175,12 +682,14 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
 
       _pantryEntries.sort((a, b) => a.expiryDate.compareTo(b.expiryDate));
     });
+    _schedulePersistenceSync();
   }
 
   void _removePantryEntry(String entryId) {
     setState(() {
       _pantryEntries.removeWhere((entry) => entry.id == entryId);
     });
+    _schedulePersistenceSync();
   }
 
   int _addShoppingEntries(
@@ -213,6 +722,10 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
         addedCount += 1;
       }
     });
+
+    if (addedCount > 0) {
+      _schedulePersistenceSync();
+    }
 
     return addedCount;
   }
@@ -294,6 +807,7 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
       _newShoppingName = '';
       _newShoppingController.clear();
     });
+    _schedulePersistenceSync();
   }
 
   void _toggleShoppingEntry(String entryId) {
@@ -306,18 +820,21 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
       final current = _shoppingEntries[index];
       _shoppingEntries[index] = current.copyWith(checked: !current.checked);
     });
+    _schedulePersistenceSync();
   }
 
   void _removeShoppingEntry(String entryId) {
     setState(() {
       _shoppingEntries.removeWhere((entry) => entry.id == entryId);
     });
+    _schedulePersistenceSync();
   }
 
   void _removeCheckedShopping() {
     setState(() {
       _shoppingEntries.removeWhere((entry) => entry.checked);
     });
+    _schedulePersistenceSync();
   }
 
   void _moveCheckedShoppingToPantry() {
@@ -360,6 +877,7 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
       _pantryEntries.sort((a, b) => a.expiryDate.compareTo(b.expiryDate));
       _shoppingEntries.removeWhere((entry) => entry.checked);
     });
+    _schedulePersistenceSync();
 
     _showToast('체크된 장보기 항목을 냉장고에 반영했습니다.');
   }
@@ -413,6 +931,34 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
     }
 
     _upsertPantryEntry(edited);
+  }
+
+  Future<void> _editExpiryDateInline(PantryEntry entry) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: entry.expiryDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2035),
+    );
+
+    if (picked == null) {
+      return;
+    }
+
+    final nextExpiryDate = DateTime(picked.year, picked.month, picked.day);
+    _upsertPantryEntry(entry.copyWith(expiryDate: nextExpiryDate));
+    _showToast('${entry.ingredient.name} 소비기한을 수정했습니다.');
+  }
+
+  Future<void> _openCoupangLink(String keyword) async {
+    final uri = Uri.parse(
+      'https://www.coupang.com/np/search?q=${Uri.encodeQueryComponent(keyword)}',
+    );
+
+    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!launched) {
+      _showToast('쿠팡 링크를 열 수 없습니다.');
+    }
   }
 
   Widget _buildOverviewTab() {
@@ -625,6 +1171,12 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
     }
 
     final categories = sortIngredientCategories(grouped.keys);
+    final selectedCategory = categories.contains(_selectedPantryCategory)
+        ? _selectedPantryCategory
+        : '전체';
+    final visibleCategories = selectedCategory == '전체'
+        ? categories
+        : categories.where((category) => category == selectedCategory).toList();
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
@@ -637,36 +1189,90 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
           shoppingCount: _uncheckedShoppingEntries.length,
           bookmarkCount: _bookmarkedRecipes.length,
         ),
-        const SizedBox(height: 20),
-        for (final category in categories) ...[
-          Row(
-            children: [
-              Text(
-                category,
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w800,
-                ),
+        const SizedBox(height: 14),
+        const Text(
+          '카테고리별 보기',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            FilterChip(
+              selected: selectedCategory == '전체',
+              onSelected: (_) {
+                setState(() {
+                  _selectedPantryCategory = '전체';
+                });
+              },
+              label: Text('전체 (${_pantryEntries.length})'),
+            ),
+            for (final category in categories)
+              FilterChip(
+                selected: selectedCategory == category,
+                onSelected: (_) {
+                  setState(() {
+                    _selectedPantryCategory = category;
+                  });
+                },
+                label: Text('$category (${grouped[category]!.length})'),
               ),
-              const SizedBox(width: 8),
-              Text(
-                '${grouped[category]!.length}개',
-                style: const TextStyle(
-                  color: Color(0xFF6B7280),
-                  fontWeight: FontWeight.w600,
+          ],
+        ),
+        const SizedBox(height: 14),
+        for (final category in visibleCategories) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFFFFF),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFBFDBFE)),
+            ),
+            child: Row(
+              children: [
+                Text(
+                  category,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF0F172A),
+                  ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          ...grouped[category]!.map(
-            (entry) => PantryCard(
-              entry: entry,
-              onEdit: () => _openEditEntrySheet(entry),
-              onDelete: () => _removePantryEntry(entry.id),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFDBEAFE),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    '${grouped[category]!.length}개',
+                    style: const TextStyle(
+                      color: Color(0xFF1D4ED8),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 8),
+          ...grouped[category]!.map(
+            (entry) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: PantryCard(
+                entry: entry,
+                onEdit: () => _openEditEntrySheet(entry),
+                onDelete: () => _removePantryEntry(entry.id),
+                onTapExpiryBadge: () => _editExpiryDateInline(entry),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
         ],
       ],
     );
@@ -844,9 +1450,18 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
                 subtitle: Text(
                   '${entry.reason}${entry.recipeName == null ? '' : ' · ${entry.recipeName}'}',
                 ),
-                trailing: IconButton(
-                  onPressed: () => _removeShoppingEntry(entry.id),
-                  icon: const Icon(Icons.delete_outline),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextButton(
+                      onPressed: () => _openCoupangLink(entry.name),
+                      child: const Text('쿠팡'),
+                    ),
+                    IconButton(
+                      onPressed: () => _removeShoppingEntry(entry.id),
+                      icon: const Icon(Icons.delete_outline),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -907,6 +1522,30 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
           '설정',
           style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
         ),
+        const SizedBox(height: 10),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: const Color(0xFFECFEFF),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFCFFAFE)),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.cloud_done_outlined, color: Color(0xFF0E7490)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '저장 상태: $_persistenceStatus',
+                  style: const TextStyle(
+                    color: Color(0xFF155E75),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
         const SizedBox(height: 14),
         const Text(
           '레시피 계량 단위',
@@ -935,6 +1574,7 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
             setState(() {
               _measureMode = selection.first;
             });
+            _schedulePersistenceSync();
           },
         ),
         const SizedBox(height: 16),
@@ -972,6 +1612,25 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
 
   @override
   Widget build(BuildContext context) {
+    if (_hydratingState) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('냉장고를 부탁해'), centerTitle: false),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 12),
+              Text(
+                '데이터를 불러오는 중입니다...',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     final tabs = <Widget>[
       _buildOverviewTab(),
       _buildHomeTab(),
@@ -982,7 +1641,16 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('냉장고를 부탁해'), centerTitle: false),
-      body: IndexedStack(index: _tabIndex, children: tabs),
+      body: DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFFF0FDFA), Color(0xFFF8FAFC)],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+        ),
+        child: IndexedStack(index: _tabIndex, children: tabs),
+      ),
       floatingActionButton: _tabIndex == 1
           ? FloatingActionButton.extended(
               onPressed: _openAddEntrySheet,
@@ -1084,11 +1752,13 @@ class PantryCard extends StatelessWidget {
     required this.entry,
     required this.onEdit,
     required this.onDelete,
+    required this.onTapExpiryBadge,
   });
 
   final PantryEntry entry;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final VoidCallback onTapExpiryBadge;
 
   @override
   Widget build(BuildContext context) {
@@ -1149,7 +1819,20 @@ class PantryCard extends StatelessWidget {
             ),
             Column(
               children: [
-                _DDayBadge(daysLeft: daysLeft),
+                InkWell(
+                  onTap: onTapExpiryBadge,
+                  borderRadius: BorderRadius.circular(999),
+                  child: _DDayBadge(daysLeft: daysLeft),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  '날짜수정',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFF64748B),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
                 const SizedBox(height: 6),
                 IconButton(
                   visualDensity: VisualDensity.compact,
@@ -1958,6 +2641,20 @@ class PantryEntry {
   final IngredientOption ingredient;
   final DateTime addedDate;
   final DateTime expiryDate;
+
+  PantryEntry copyWith({
+    String? id,
+    IngredientOption? ingredient,
+    DateTime? addedDate,
+    DateTime? expiryDate,
+  }) {
+    return PantryEntry(
+      id: id ?? this.id,
+      ingredient: ingredient ?? this.ingredient,
+      addedDate: addedDate ?? this.addedDate,
+      expiryDate: expiryDate ?? this.expiryDate,
+    );
+  }
 }
 
 class RecipeData {
