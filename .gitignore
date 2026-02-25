@@ -33,6 +33,13 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 !.env.example
+!.env.mobile-stack.example
+
+# mobile secrets
+fridge_mobile_app/config/dart_defines*.json
+!fridge_mobile_app/config/dart_defines.example.json
+fridge_mobile_app/android/app/google-services.json
+fridge_mobile_app/ios/Runner/GoogleService-Info.plist
 
 # vercel
 .vercel

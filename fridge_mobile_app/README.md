@@ -1,17 +1,58 @@
 # fridge_mobile_app
 
-A new Flutter project.
+Flutter mobile app for iOS/Android.
 
-## Getting Started
+## 1) Install dependencies
 
-This project is a starting point for a Flutter application.
+```bash
+flutter pub get
+```
 
-A few resources to get you started if this is your first Flutter project:
+## 2) Configure runtime keys
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+Copy and edit:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+cp config/dart_defines.example.json config/dart_defines.local.json
+```
+
+Run with:
+
+```bash
+flutter run --dart-define-from-file=config/dart_defines.local.json
+```
+
+## 3) Firebase files
+
+Add platform files before enabling crash/analytics in production:
+
+- `android/app/google-services.json`
+- `ios/Runner/GoogleService-Info.plist`
+
+## 4) Quality and release
+
+- Maestro smoke tests: `maestro test maestro/home_smoke.yaml`
+- Fastlane iOS beta: `bundle exec fastlane ios beta`
+- Fastlane Android beta: `bundle exec fastlane android beta`
+
+## 5) iOS local build
+
+If `xcode-select -p` points to `CommandLineTools`, run iOS builds with:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer flutter build ios --simulator --debug
+```
+
+This project also overrides `objective_c` to a local patched copy under `third_party/objective_c` to avoid SDK path lookup failures in that environment.
+
+## 6) Notes
+
+App bootstrap initializes integrations safely:
+
+- Supabase
+- OneSignal
+- RevenueCat
+- Firebase Analytics
+- Firebase Crashlytics
+
+If required keys are missing, the integration is skipped and logged.

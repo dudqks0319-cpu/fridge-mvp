@@ -7,7 +7,15 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test test/smoke.test.mjs"
+    "test": "node --test test/smoke.test.mjs",
+    "mobile:doctor": "bash scripts/mobile/doctor.sh",
+    "mobile:bootstrap": "bash scripts/mobile/bootstrap-tools.sh",
+    "mobile:secrets:apply": "bash scripts/mobile/apply-mobile-secrets.sh",
+    "mobile:maestro": "bash scripts/mobile/run-maestro.sh",
+    "mobile:supabase:functions:deploy": "bash scripts/mobile/deploy-supabase-functions.sh",
+    "mobile:ios:sim:debug": "cd fridge_mobile_app && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer flutter build ios --simulator --debug",
+    "mobile:eas:build:ios": "eas build --platform ios --profile production",
+    "mobile:eas:build:android": "eas build --platform android --profile production"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.97.0",

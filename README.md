@@ -51,6 +51,19 @@ pnpm build
 - Vercel 배포를 기준으로 운영합니다.
 - 완료 후 GitHub + Vercel 링크를 함께 공유합니다.
 
+## 모바일 전체 스택 적용 가이드
+
+요청한 10개 스택(FlutterFlow+Supabase, RLS, Supabase MCP, EAS, OneSignal, RevenueCat, Firebase Crashlytics/Analytics, Maestro, GitHub Actions, Fastlane) 적용 상태와 실행 방법은 아래 문서를 확인하세요.
+
+- `docs/mobile-stack/README.md`
+
+빠른 적용:
+
+```bash
+cp .env.mobile-stack.example .env.mobile-stack.local
+pnpm mobile:secrets:apply
+```
+
 ## Swift 풀스택(iPhone + Swift Backend)
 
 로그인 제외 기능을 Swift로 이식한 버전은 `swift-fullstack/` 폴더를 확인해 주세요.
