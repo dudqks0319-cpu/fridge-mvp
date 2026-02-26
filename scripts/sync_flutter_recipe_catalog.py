@@ -409,6 +409,10 @@ def render_recipe_catalog(recipes: List[dict]) -> str:
     for ingredient_id in item["ingredientIds"]:
       lines.append(f"      {dart_quote(ingredient_id)},")
     lines.append("    ],")
+    lines.append("    steps: [")
+    for step in item.get("steps", []):
+      lines.append(f"      {dart_quote(step)},")
+    lines.append("    ],")
     lines.append("  ),")
   lines.append("];")
   return "\n".join(lines)
@@ -482,7 +486,13 @@ def main() -> int:
         ingredient_ids.append(ingredient_id)
         seen_ingredient_ids.add(ingredient_id)
 
-    steps = recipe.get("steps", []) or []
+    raw_steps = recipe.get("steps", []) or []
+    steps: List[str] = []
+    for raw_step in raw_steps:
+      cleaned_step = clean_name(str(raw_step))
+      if cleaned_step:
+        steps.append(cleaned_step[:220])
+
     first_step = sanitize_step(str(steps[0])) if steps else ""
     time_text = clean_name(str(recipe.get("time", "")))
     difficulty = clean_name(str(recipe.get("difficulty", "")))
@@ -503,6 +513,7 @@ def main() -> int:
                 recipe_id, "assets/images/recipes/recipe_placeholder.jpg"
             ),
             "ingredientIds": ingredient_ids,
+            "steps": steps,
         }
     )
 
