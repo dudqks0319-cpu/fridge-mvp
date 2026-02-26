@@ -1680,7 +1680,7 @@ class _FridgeHomePageState extends State<FridgeHomePage> {
   Widget _buildSettingsTab() {
     final essentialCandidates = ingredientOptions
         .where((ingredient) => ingredient.category != '양념')
-        .take(14)
+        .take(24)
         .toList();
     final condimentCandidates = ingredientOptions
         .where((ingredient) => ingredient.category == '양념')
@@ -2152,12 +2152,12 @@ class RecipeCard extends StatelessWidget {
               onTap: onOpenDetail,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(14),
-                child: Image.asset(
-                  recipe.photoUrl,
+                child: buildFoodImage(
+                  path: recipe.photoUrl,
                   width: double.infinity,
                   height: 170,
                   fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) => Container(
+                  onError: (error, stackTrace) => Container(
                     height: 170,
                     color: const Color(0xFFF1F3F8),
                     child: const Center(
@@ -2334,12 +2334,12 @@ class RecipeDetailPage extends StatelessWidget {
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(18),
-            child: Image.asset(
-              recipe.photoUrl,
+            child: buildFoodImage(
+              path: recipe.photoUrl,
               width: double.infinity,
               height: 220,
               fit: BoxFit.cover,
-              errorBuilder: (context, error, stackTrace) => Container(
+              onError: (error, stackTrace) => Container(
                 height: 220,
                 color: const Color(0xFFF1F3F8),
                 child: const Center(child: Icon(Icons.restaurant, size: 42)),
@@ -2539,12 +2539,12 @@ class BookmarkCard extends StatelessWidget {
         contentPadding: const EdgeInsets.all(10),
         leading: ClipRRect(
           borderRadius: BorderRadius.circular(10),
-          child: Image.asset(
-            recipe.photoUrl,
+          child: buildFoodImage(
+            path: recipe.photoUrl,
             width: 64,
             height: 64,
             fit: BoxFit.cover,
-            errorBuilder: (context, error, stackTrace) => Container(
+            onError: (error, stackTrace) => Container(
               width: 64,
               height: 64,
               color: const Color(0xFFF1F3F8),
@@ -3057,6 +3057,36 @@ String createLocalId() {
   return DateTime.now().microsecondsSinceEpoch.toString();
 }
 
+bool isRemoteImagePath(String path) {
+  return path.startsWith('http://') || path.startsWith('https://');
+}
+
+Widget buildFoodImage({
+  required String path,
+  required double width,
+  required double height,
+  required Widget Function(Object error, StackTrace? stackTrace) onError,
+  BoxFit fit = BoxFit.cover,
+}) {
+  if (isRemoteImagePath(path)) {
+    return Image.network(
+      path,
+      width: width,
+      height: height,
+      fit: fit,
+      errorBuilder: (context, error, stackTrace) => onError(error, stackTrace),
+    );
+  }
+
+  return Image.asset(
+    path,
+    width: width,
+    height: height,
+    fit: fit,
+    errorBuilder: (context, error, stackTrace) => onError(error, stackTrace),
+  );
+}
+
 String normalizeIngredientToken(String value) {
   return value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '');
 }
@@ -3454,6 +3484,149 @@ final List<IngredientOption> ingredientOptions = [
     category: '곡물/면',
     photoUrl: 'assets/images/ingredients/rice.jpg',
   ),
+  IngredientOption(
+    id: 'tomato',
+    name: '토마토',
+    category: '채소',
+    photoUrl: 'assets/images/ingredients/cucumber.jpg',
+  ),
+  IngredientOption(
+    id: 'broccoli',
+    name: '브로콜리',
+    category: '채소',
+    photoUrl: 'assets/images/ingredients/cabbage.jpg',
+  ),
+  IngredientOption(
+    id: 'bean_sprout',
+    name: '콩나물',
+    category: '채소',
+    photoUrl: 'assets/images/ingredients/spinach.jpg',
+  ),
+  IngredientOption(
+    id: 'chili',
+    name: '청양고추',
+    category: '채소',
+    photoUrl: 'assets/images/ingredients/green-onion.jpg',
+    aliases: ['고추'],
+  ),
+  IngredientOption(
+    id: 'bell_pepper',
+    name: '파프리카',
+    category: '채소',
+    photoUrl: 'assets/images/ingredients/carrot.jpg',
+  ),
+  IngredientOption(
+    id: 'bacon',
+    name: '베이컨',
+    category: '육류',
+    photoUrl: 'assets/images/ingredients/pork.jpg',
+  ),
+  IngredientOption(
+    id: 'sausage',
+    name: '소시지',
+    category: '육류',
+    photoUrl: 'assets/images/ingredients/spam.jpg',
+  ),
+  IngredientOption(
+    id: 'cheese',
+    name: '치즈',
+    category: '유제품',
+    photoUrl: 'assets/images/ingredients/milk.jpg',
+  ),
+  IngredientOption(
+    id: 'butter',
+    name: '버터',
+    category: '유제품',
+    photoUrl: 'assets/images/ingredients/milk.jpg',
+  ),
+  IngredientOption(
+    id: 'yogurt',
+    name: '요거트',
+    category: '유제품',
+    photoUrl: 'assets/images/ingredients/milk.jpg',
+  ),
+  IngredientOption(
+    id: 'tuna_can',
+    name: '참치캔',
+    category: '가공식품',
+    photoUrl: 'assets/images/ingredients/spam.jpg',
+    aliases: ['참치'],
+  ),
+  IngredientOption(
+    id: 'dumpling',
+    name: '만두',
+    category: '가공식품',
+    photoUrl: 'assets/images/ingredients/fish-cake.jpg',
+  ),
+  IngredientOption(
+    id: 'rice_cake',
+    name: '떡',
+    category: '가공식품',
+    photoUrl: 'assets/images/ingredients/fish-cake.jpg',
+    aliases: ['떡볶이떡'],
+  ),
+  IngredientOption(
+    id: 'seaweed',
+    name: '김',
+    category: '가공식품',
+    photoUrl: 'assets/images/ingredients/cabbage.jpg',
+    aliases: ['김가루'],
+  ),
+  IngredientOption(
+    id: 'vinegar',
+    name: '식초',
+    category: '양념',
+    photoUrl: 'assets/images/ingredients/soy-sauce.jpg',
+  ),
+  IngredientOption(
+    id: 'black_pepper',
+    name: '후추',
+    category: '양념',
+    photoUrl: 'assets/images/ingredients/salt.jpg',
+  ),
+  IngredientOption(
+    id: 'doenjang',
+    name: '된장',
+    category: '양념',
+    photoUrl: 'assets/images/ingredients/gochujang.jpg',
+  ),
+  IngredientOption(
+    id: 'oyster_sauce',
+    name: '굴소스',
+    category: '양념',
+    photoUrl: 'assets/images/ingredients/soy-sauce.jpg',
+  ),
+  IngredientOption(
+    id: 'cooking_wine',
+    name: '맛술',
+    category: '양념',
+    photoUrl: 'assets/images/ingredients/soy-sauce.jpg',
+  ),
+  IngredientOption(
+    id: 'oligo_syrup',
+    name: '올리고당',
+    category: '양념',
+    photoUrl: 'assets/images/ingredients/sugar.jpg',
+  ),
+  IngredientOption(
+    id: 'udon',
+    name: '우동면',
+    category: '곡물/면',
+    photoUrl: 'assets/images/ingredients/rice.jpg',
+  ),
+  IngredientOption(
+    id: 'spaghetti',
+    name: '스파게티면',
+    category: '곡물/면',
+    photoUrl: 'assets/images/ingredients/rice.jpg',
+    aliases: ['파스타면'],
+  ),
+  IngredientOption(
+    id: 'bread',
+    name: '식빵',
+    category: '곡물/면',
+    photoUrl: 'assets/images/ingredients/rice.jpg',
+  ),
 ];
 
 final Map<String, IngredientOption> ingredientById = {
@@ -3477,7 +3650,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '묵은지와 돼지고기를 넣어 진한 국물 맛을 내는 대표 집밥 메뉴입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6835685',
-    photoUrl: 'assets/images/recipes/kimchi-jjigae.jpg',
+    photoUrl: 'assets/images/recipes/kimchi_stew.png',
     ingredientIds: [
       'kimchi',
       'pork',
@@ -3493,7 +3666,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '볶은 김치와 두부를 곁들여 간단하게 완성하는 술안주 겸 반찬 메뉴입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6915971',
-    photoUrl: 'assets/images/recipes/kimchi-jjigae.jpg',
+    photoUrl: 'assets/images/recipes/tofu_kimchi.png',
     ingredientIds: ['tofu', 'kimchi', 'pork', 'onion', 'green_onion', 'garlic'],
   ),
   RecipeData(
@@ -3502,7 +3675,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '양파와 대파를 듬뿍 넣어 매콤달콤하게 볶는 밥도둑 메뉴입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6841008',
-    photoUrl: 'assets/images/recipes/jeyuk-bokkeum.jpg',
+    photoUrl: 'assets/images/recipes/jeyuk.png',
     ingredientIds: [
       'pork',
       'onion',
@@ -3519,7 +3692,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '상추와 깻잎에 매콤한 돼지고기를 곁들이는 한 끼 구성 메뉴입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6892456',
-    photoUrl: 'assets/images/recipes/jeyuk-bokkeum.jpg',
+    photoUrl: 'assets/images/recipes/lettuce_pork_wrap.png',
     ingredientIds: [
       'pork',
       'lettuce',
@@ -3535,7 +3708,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '짭짤한 간장 양념으로 빠르게 만들 수 있는 국민 반찬입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6903394',
-    photoUrl: 'assets/images/recipes/fish-cake-stir-fry.jpg',
+    photoUrl: 'assets/images/recipes/fish_cake_stir_fry.png',
     ingredientIds: [
       'fish_cake',
       'onion',
@@ -3551,7 +3724,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '가지를 부드럽게 볶아 만드는 간단 반찬으로 밥과 잘 어울립니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6917883',
-    photoUrl: 'assets/images/recipes/fish-cake-stir-fry.jpg',
+    photoUrl: 'assets/images/recipes/eggplant_stir_fry.png',
     ingredientIds: [
       'eggplant',
       'onion',
@@ -3567,7 +3740,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '새콤달콤한 양념으로 입맛을 살려주는 초간단 반찬입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6897261',
-    photoUrl: 'assets/images/recipes/cucumber-salad.jpg',
+    photoUrl: 'assets/images/recipes/cucumber_salad.png',
     ingredientIds: [
       'cucumber',
       'onion',
@@ -3583,7 +3756,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '데친 시금치를 양념에 무쳐 식탁에 자주 올리기 좋은 반찬입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6903050',
-    photoUrl: 'assets/images/recipes/cucumber-salad.jpg',
+    photoUrl: 'assets/images/recipes/spinach_namul.png',
     ingredientIds: ['spinach', 'garlic', 'soy_sauce', 'sesame_oil', 'salt'],
   ),
   RecipeData(
@@ -3592,7 +3765,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '아삭한 무에 매콤달콤 양념을 더한 밥반찬 스타일의 생채입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6833703',
-    photoUrl: 'assets/images/recipes/cucumber-salad.jpg',
+    photoUrl: 'assets/images/recipes/radish_salad.png',
     ingredientIds: ['radish', 'gochugaru', 'garlic', 'sugar', 'salt', 'green_onion'],
   ),
   RecipeData(
@@ -3601,7 +3774,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '감자와 스팸으로 만드는 얼큰한 자작찌개 스타일 메뉴입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6891652',
-    photoUrl: 'assets/images/recipes/gamja-jjageuli.jpg',
+    photoUrl: 'assets/images/recipes/gamja_jjageuli.png',
     ingredientIds: [
       'potato',
       'spam',
@@ -3617,7 +3790,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '닭고기와 감자를 달큰짭짤하게 조려내는 집밥 메인 반찬입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6623046',
-    photoUrl: 'assets/images/recipes/gamja-jjageuli.jpg',
+    photoUrl: 'assets/images/recipes/chicken_potato_stew.png',
     ingredientIds: ['chicken', 'potato', 'carrot', 'onion', 'garlic', 'soy_sauce', 'sugar'],
   ),
   RecipeData(
@@ -3626,7 +3799,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '삶은 고구마에 우유를 더해 부드럽게 만드는 간식 겸 반찬입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6879242',
-    photoUrl: 'assets/images/recipes/gamja-jjageuli.jpg',
+    photoUrl: 'assets/images/recipes/sweet_potato_salad.png',
     ingredientIds: ['sweet_potato', 'milk', 'sugar', 'salt'],
   ),
   RecipeData(
@@ -3635,7 +3808,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '두부를 간장 베이스로 조려 밥 위에 올리는 간단 한그릇 요리입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/',
-    photoUrl: 'assets/images/recipes/soy-sauce-tofu-rice.jpg',
+    photoUrl: 'assets/images/recipes/soy_sauce_tofu_rice.png',
     ingredientIds: ['tofu', 'soy_sauce', 'garlic', 'green_onion', 'rice'],
   ),
   RecipeData(
@@ -3644,7 +3817,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '깻잎 향과 두부의 담백함을 살린 가벼운 반찬입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6830294',
-    photoUrl: 'assets/images/recipes/soy-sauce-tofu-rice.jpg',
+    photoUrl: 'assets/images/recipes/perilla_tofu_salad.png',
     ingredientIds: ['tofu', 'perilla_leaf', 'soy_sauce', 'sesame_oil', 'garlic'],
   ),
   RecipeData(
@@ -3653,7 +3826,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '계란과 간장만 있어도 빠르게 만들 수 있는 자취생 필수 메뉴입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/',
-    photoUrl: 'assets/images/recipes/egg-rice.jpg',
+    photoUrl: 'assets/images/recipes/egg_rice.png',
     ingredientIds: ['egg', 'soy_sauce', 'sesame_oil', 'rice'],
   ),
   RecipeData(
@@ -3662,7 +3835,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '김치와 쌀을 빠르게 볶아 한 그릇으로 먹기 좋은 메뉴입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6888583',
-    photoUrl: 'assets/images/recipes/egg-rice.jpg',
+    photoUrl: 'assets/images/recipes/kimchi_fried_rice.png',
     ingredientIds: ['kimchi', 'rice', 'egg', 'green_onion', 'soy_sauce', 'sesame_oil'],
   ),
   RecipeData(
@@ -3671,7 +3844,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '스팸과 달걀을 더해 간단하게 완성하는 든든한 볶음밥입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6886747',
-    photoUrl: 'assets/images/recipes/egg-rice.jpg',
+    photoUrl: 'assets/images/recipes/spam_egg_fried_rice.png',
     ingredientIds: ['spam', 'egg', 'green_onion', 'rice', 'soy_sauce'],
   ),
   RecipeData(
@@ -3680,7 +3853,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '된장과 고추장을 살짝 섞어 깊은 맛을 내는 변형 라면 레시피입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/',
-    photoUrl: 'assets/images/recipes/doenjang-ramen.jpg',
+    photoUrl: 'assets/images/recipes/doenjang_ramen.png',
     ingredientIds: ['ramen', 'gochujang', 'soy_sauce', 'green_onion', 'egg'],
   ),
   RecipeData(
@@ -3689,7 +3862,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '국수면을 삶아 간단 양념으로 비벼 먹는 초간단 면 요리입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6900650',
-    photoUrl: 'assets/images/recipes/doenjang-ramen.jpg',
+    photoUrl: 'assets/images/recipes/simple_noodle_bowl.png',
     ingredientIds: ['noodle', 'soy_sauce', 'gochugaru', 'sugar', 'sesame_oil'],
   ),
   RecipeData(
@@ -3698,7 +3871,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '소고기와 무로 끓여 담백하면서도 깊은 맛이 나는 국 요리입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6897772',
-    photoUrl: 'assets/images/recipes/beef-radish-soup.jpg',
+    photoUrl: 'assets/images/recipes/beef_radish_soup.png',
     ingredientIds: ['beef', 'radish', 'green_onion', 'garlic', 'soy_sauce'],
   ),
   RecipeData(
@@ -3707,7 +3880,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '소고기와 버섯을 센 불에 볶아 빠르게 완성하는 메인 반찬입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6885470',
-    photoUrl: 'assets/images/recipes/beef-radish-soup.jpg',
+    photoUrl: 'assets/images/recipes/beef_mushroom_stir_fry.png',
     ingredientIds: ['beef', 'mushroom', 'onion', 'garlic', 'soy_sauce', 'sesame_oil'],
   ),
   RecipeData(
@@ -3716,7 +3889,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '버섯과 두부를 넣고 담백하게 끓이는 국물 요리입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6897772',
-    photoUrl: 'assets/images/recipes/beef-radish-soup.jpg',
+    photoUrl: 'assets/images/recipes/mushroom_tofu_soup.png',
     ingredientIds: ['mushroom', 'tofu', 'green_onion', 'garlic', 'soy_sauce'],
   ),
   RecipeData(
@@ -3725,7 +3898,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '계란에 채소를 넣어 부드럽게 말아낸 도시락 인기 반찬입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/',
-    photoUrl: 'assets/images/recipes/egg-roll.jpg',
+    photoUrl: 'assets/images/recipes/egg_roll.png',
     ingredientIds: ['egg', 'onion', 'green_onion', 'carrot'],
   ),
   RecipeData(
@@ -3734,7 +3907,7 @@ final List<RecipeData> recipeCatalog = [
     summary: '양배추와 달걀을 함께 볶아 가볍게 먹기 좋은 반찬입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6867256',
-    photoUrl: 'assets/images/recipes/egg-roll.jpg',
+    photoUrl: 'assets/images/recipes/cabbage_egg_stir_fry.png',
     ingredientIds: ['cabbage', 'egg', 'onion', 'garlic', 'soy_sauce'],
   ),
   RecipeData(
@@ -3743,7 +3916,106 @@ final List<RecipeData> recipeCatalog = [
     summary: '배추와 김치를 넣어 칼칼하면서도 시원하게 끓여낸 국 요리입니다.',
     source: '오픈 레시피 편집본',
     sourceUrl: 'https://www.10000recipe.com/recipe/6838648',
-    photoUrl: 'assets/images/recipes/kimchi-jjigae.jpg',
+    photoUrl: 'assets/images/recipes/napa_kimchi_soup.png',
     ingredientIds: ['napa_cabbage', 'kimchi', 'green_onion', 'garlic', 'soy_sauce'],
+  ),
+  RecipeData(
+    id: 'bean_sprout_namul',
+    name: '콩나물무침',
+    summary: '콩나물과 기본 양념만으로 빠르게 만드는 기본 반찬입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6867256',
+    photoUrl: 'assets/images/recipes/bean_sprout_namul.png',
+    ingredientIds: ['bean_sprout', 'garlic', 'green_onion', 'soy_sauce', 'sesame_oil', 'salt'],
+  ),
+  RecipeData(
+    id: 'broccoli_stir_fry',
+    name: '브로콜리볶음',
+    summary: '브로콜리를 살짝 데쳐 볶아 식감 좋게 만드는 간단 반찬입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6903394',
+    photoUrl: 'assets/images/recipes/broccoli_stir_fry.png',
+    ingredientIds: ['broccoli', 'garlic', 'soy_sauce', 'black_pepper', 'sesame_oil'],
+  ),
+  RecipeData(
+    id: 'tomato_egg_stir_fry',
+    name: '토마토달걀볶음',
+    summary: '토마토의 산미와 달걀의 부드러움이 어울리는 한 접시 메뉴입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6891606',
+    photoUrl: 'assets/images/recipes/tomato_egg_stir_fry.png',
+    ingredientIds: ['tomato', 'egg', 'green_onion', 'salt', 'sugar'],
+  ),
+  RecipeData(
+    id: 'cheese_omelette',
+    name: '치즈오믈렛',
+    summary: '치즈를 넣어 고소하게 만드는 아침용 달걀 요리입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6891606',
+    photoUrl: 'assets/images/recipes/cheese_omelette.png',
+    ingredientIds: ['egg', 'cheese', 'milk', 'salt', 'black_pepper'],
+  ),
+  RecipeData(
+    id: 'tuna_mayo_rice',
+    name: '참치마요덮밥',
+    summary: '참치와 쌀을 활용해 간단하게 완성하는 한 그릇 메뉴입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6888303',
+    photoUrl: 'assets/images/recipes/tuna_mayo_rice.png',
+    ingredientIds: ['tuna_can', 'rice', 'onion', 'soy_sauce', 'sesame_oil'],
+  ),
+  RecipeData(
+    id: 'sausage_veggie_stir_fry',
+    name: '소시지야채볶음',
+    summary: '소시지와 채소를 함께 볶아 아이 반찬으로도 좋은 메뉴입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6899265',
+    photoUrl: 'assets/images/recipes/sausage_veggie_stir_fry.png',
+    ingredientIds: ['sausage', 'onion', 'carrot', 'bell_pepper', 'soy_sauce', 'sugar'],
+  ),
+  RecipeData(
+    id: 'dumpling_soup',
+    name: '만둣국',
+    summary: '만두를 넣고 간단하게 끓이는 든든한 한 끼 국물 요리입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6873935',
+    photoUrl: 'assets/images/recipes/dumpling_soup.png',
+    ingredientIds: ['dumpling', 'green_onion', 'garlic', 'soy_sauce', 'egg'],
+  ),
+  RecipeData(
+    id: 'kimchi_pancake',
+    name: '김치전',
+    summary: '김치와 밀가루 반죽으로 바삭하게 부쳐 먹는 간식 겸 안주입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6894096',
+    photoUrl: 'assets/images/recipes/kimchi_pancake.png',
+    ingredientIds: ['kimchi', 'flour', 'green_onion', 'egg', 'salt'],
+  ),
+  RecipeData(
+    id: 'rice_cake_stir_fry',
+    name: '떡볶이',
+    summary: '떡과 고추장 양념으로 빠르게 만드는 분식 스타일 메뉴입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6829760',
+    photoUrl: 'assets/images/recipes/rice_cake_stir_fry.png',
+    ingredientIds: ['rice_cake', 'gochujang', 'gochugaru', 'sugar', 'green_onion'],
+  ),
+  RecipeData(
+    id: 'seaweed_rice_ball',
+    name: '김주먹밥',
+    summary: '쌀과 김으로 간단히 만드는 도시락용 주먹밥입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6888583',
+    photoUrl: 'assets/images/recipes/seaweed_rice_ball.png',
+    ingredientIds: ['rice', 'seaweed', 'sesame_oil', 'salt'],
+  ),
+  RecipeData(
+    id: 'udon_stir_fry',
+    name: '간장우동볶음',
+    summary: '우동면을 간장 베이스로 볶아 만드는 빠른 한 끼 메뉴입니다.',
+    source: '오픈 레시피 편집본',
+    sourceUrl: 'https://www.10000recipe.com/recipe/6900650',
+    photoUrl: 'assets/images/recipes/udon_stir_fry.png',
+    ingredientIds: ['udon', 'onion', 'carrot', 'soy_sauce', 'oyster_sauce', 'sesame_oil'],
   ),
 ];
